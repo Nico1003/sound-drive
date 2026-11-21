@@ -70,9 +70,13 @@ Konstantfahrt, Teillast):
 - Profil und Lautstärke per Antippen wählen – große Knöpfe, zwei je Reihe, gut während der Fahrt zu treffen; der
   iDrive-Knopf und die Lautstärkeregelung des Autos bleiben unangetastet
 - Lautstärke 0–100 % (100 % ist so laut wie früher 150 %: leise Passagen deutlich lauter, Spitzen begrenzt), **Ausprägung** (wie stark der Sound mit der Last aufmacht), Sport-Boost, stumm im Stand
-- **Sound folgt dem Fahrmodus** (abschaltbar) und **Breite Ansicht:** Standard ist die schmale Ansicht, die
-  rechts Platz für das Seitenfenster der geteilten Ansicht lässt; ohne Seitenfenster nutzt die breite Ansicht die
-  ganze Breite
+- **Sound folgt dem Fahrmodus** (abschaltbar) und **Breite Ansicht** (Standard, nutzt die ganze Breite; aus: Platz für
+  das Seitenfenster der geteilten Ansicht)
+- **Lautstärkeknopf regelt die Musik** (Standard): Das Auto behandelt den Motorsound wie eine Durchsage – solange
+  er läuft, würde der Knopf ihn statt der Musik verstellen. Dreht man am Knopf, tritt der Motorsound kurz zur Seite
+  (weich aus, Kanal frei), der Knopf regelt die Musik. 1,5 s nach dem letzten Drehen verbindet Sound Drive wieder;
+  hörbar ist der Sound, sobald das Auto die Verbindung freigibt (einige Sekunden). Ausgeschaltet
+  verhält es sich wie im Auto vorgesehen (der Knopf regelt den Motorsound).
 - **Bei Telefon/Ansagen leiser:** Telefonate, Sprachassistent, Parkpiepser und Warngongs senken den Motorsound um
   etwa 12 dB ab; Navigationsansagen bewusst nicht
 - **Klang anpassen:** Bass (Dröhnen) ±6 dB, Auspuff-Bellen 50–150 % (wie weit Schalldämpfer und Innenraum öffnen)
@@ -96,6 +100,12 @@ Der **Tonweg** ist in den Einstellungen unter „Experten“ wählbar. Standard 
 liegt über der Musik, die weiterläuft. Weitere Wege (CarLife exklusiv, CarLife-Navi, MainSink,
 CarPlay-Kanal, ALSA direkt) sind zum Ausprobieren in anderen Autos und Ausstattungen gedacht.
 
+Die Verbindung im Audiomanager braucht im Auto rund 6 Sekunden, bis sie hörbar ist. Darum baut Sound Drive sie schon
+auf, wenn das Auto aufwacht, und hält sie, solange der Motor läuft – so kommt der Ton beim Anlassen sofort. Bis die
+Verbindung steht (oder wenn eine CarPlay-Ansage sie kurz übernimmt), bleibt der Sound leise und blendet danach weich
+ein, statt abgehackt einzusetzen. Der Player läuft mit Echtzeit-Priorität, damit er auch auf einem ausgelasteten
+Head Unit nicht zu spät kommt (sonst knistert es).
+
 Der Overlay-Kanal ist mono. Ein räumlicher Klang (Auspuff hinten, Motor vorne) würde zwei getrennte Kanäle
 auf Front- und Hecklautsprecher brauchen; das gibt der Audiomanager bisher nicht her.
 
@@ -117,8 +127,8 @@ Klappt es nicht auf Anhieb: In der Statuszeile sollte „Overlay-Mix: verbunden�
 
 | Komponente | Version |
 |---|---|
-| Sound Drive (App) | 0.9.9 |
-| Sound Drive Audio (Tool) | 0.9.9 |
+| Sound Drive (App) | 1.0.0 |
+| Sound Drive Audio (Tool) | 1.0.0 |
 
 ---
 
@@ -225,7 +235,9 @@ Repository enthält nur den Teil, den die beiden Apps brauchen. Doku zum Kit:
 - [Robert Nisipeanu / MGU Store](https://github.com/robertnisipeanu/mgu-store): Store und Renderer
 - Der Audiomanager-Weg folgt dem, was Moonride (JustAnotherPU),
   [M850i-amn/idrive7-apps](https://github.com/M850i-amn/idrive7-apps) und
-  [loenne007/idrive-enginesound](https://github.com/loenne007/idrive-enginesound) dokumentiert haben
+  [loenne007/idrive-enginesound](https://github.com/loenne007/idrive-enginesound) dokumentiert haben; von dort
+  stammt auch die Beobachtung, dass der Lautstärkeknopf bei der Haupt-Senke sichtbar ist und das Auto die Quelle wie
+  eine Durchsage behandelt (eigene Umsetzung, kein übernommener Code)
 
 ## Lizenz
 

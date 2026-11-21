@@ -57,7 +57,9 @@
   // Lautstärke steigt mit dem Tempo (Wind- und Abrollgeräusche): ab 50 km/h, volle Anhebung (cfg.speedVol dB) ab 130 km/h
   var SPD_FROM = 50, SPD_FULL = 130;
   // Startsound beim Motorstart: Anlassen (Starter dreht den Motor), Anspringen mit Hochdrehen, Absinken auf Leerlauf
-  var START_CRANK = 0.35, START_FLARE = 0.75, START_END = 2.2;
+  // Kurz und an der echten Drehzahl: 0,25 s Anlasser, danach folgt der Sound sofort dem Motor, nur mit einem
+  // kleinen, abklingenden Hochdrehen (sonst wirkt der Start verzögert, weil eine feste Kurve die echte überdeckt)
+  var START_CRANK = 0.25, START_END = 1.1;
   var DUCK_GAIN = 0.25;      // abgesenkt (Telefon, Ansage): ~-12 dB
   var COMP_T = 0.15, COMP_EXP = 0.667, COMP_MAKEUP = 3.0;
 
@@ -156,7 +158,7 @@
     this.sr = sampleRate || 48000;
     this.cfg = {
       enabled: true, profile: Profiles.DEFAULT,
-      volume: 0.6, intensity: 0.7, sport: false, duck: false, mode: null,
+      volume: 0.6, intensity: 0.7, sport: false, duck: false, mode: null, hold: false,
       speedVol: 4, startSound: true, bassDb: 0, barkPct: 1, hissPct: 1,
       carIdle: 800, carRedline: 4800
     };
@@ -314,7 +316,8 @@
       this._reset();
     }
     var p = this.profile;
-    var tgtGain = (c.enabled && !this.stale && !this.pending) ? 1 : 0;
+    // hold: Tonweg gerade nicht hörbar (verbindet, weg, Lautstärkeknopf gedreht) -> weich aus, danach weich ein
+    var tgtGain = (c.enabled && !c.hold && !this.stale && !this.pending) ? 1 : 0;
     // Lautstärkekurve v^1,5 (vorher v²): 60 % klingen jetzt wie früher ~70 %
     var vk = (p.gain || 1) * (c.sport ? 1.3 : 1);
     // über 100 % (Boost): der Überschuss geht VOR den Kompressor -> leise Stellen lauter, Spitzen begrenzt
@@ -332,8 +335,8 @@
     if (this.startT >= 0) {
       var st = this.startT, idle = p.idleRpm;
       if (st < START_CRANK) { rpmT = 230 + 50 * Math.sin(st * 40); loadT = 0.12; }            // Starter dreht
-      else if (st < START_FLARE) { var u = smooth((st - START_CRANK) / (START_FLARE - START_CRANK)); rpmT = 400 + u * (idle * 1.9 - 400); loadT = 0.65; } // springt an, dreht hoch
-      else { var d = (st - START_FLARE) / (START_END - START_FLARE); rpmT = idle + (idle * 0.9) * Math.exp(-4 * d); loadT = 0.65 * (1 - smooth(d)) + 0.05; } // sinkt auf Leerlauf
+      else { var d = (st - START_CRANK) / (START_END - START_CRANK), fl = Math.exp(-3.5 * d);       // springt an
+        rpmT = Math.max(rpmT, idle * (1 + 0.45 * fl)); loadT = Math.max(loadT, 0.55 * fl); }
       this.startT += CR / sr;
       if (this.startT >= START_END || this.target.rpm < 100) this.startT = -1;
     }

@@ -42,7 +42,7 @@
   // Geometrie der bedienbaren Flächen – EINE Quelle für Zeichnen, Touch-Ziele im Auto (cv.target)
   // und Klicks im Simulator.
   var X1_NARROW = 1132, X1_WIDE = 1572;
-  var X0 = 488, X1 = X1_NARROW, COLS = 2, GAP = 16, CW = (X1 - X0 - GAP) / 2, CH = 66, RGAP = 12, CHIP_Y = 84;
+  var X0 = 488, X1 = X1_NARROW, COLS = 2, GAP = 16, CW = (X1 - X0 - GAP) / 2, CH = 72, RGAP = 10, CHIP_Y = 78;
   function setWide(wide) { X1 = wide ? X1_WIDE : X1_NARROW; CW = (X1 - X0 - GAP) / 2; }
   var VY = 430, VB = 66;           // Lautstärke-Zeile, Größe der −/+-Knöpfe
   function chipRect(i) {
@@ -114,9 +114,10 @@
     g.rect(0, 0, W, H, C.bg);
 
     // ---- links: App-Name, Drehzahlmesser, Status --------------------------
-    g.text('Sound Drive', 28, 46, 30, C.text, 'left', 'light');
+    // Titel nur, wenn das Kit ihn nicht schon im Kopf zeigt (im Auto mit GPU-Renderer steht er dort)
+    if (!s.own) g.text('Sound Drive', 28, 46, 30, C.text, 'left', 'light');
     // Marken neben dem Titel: Fahrmodus (dem der Sound folgt), Sport-Boost, Demo
-    var tags = [], tx = 216, m = MODE_TAG[s.mode];
+    var tags = [], tx = s.own ? 28 : 216, m = MODE_TAG[s.mode];
     if (m) tags.push(m);
     if (s.sport) tags.push(['BOOST', C.accent2]);
     if (s.demo) tags.push(['DEMO', C.warn]);
@@ -128,9 +129,9 @@
     }
     drawTacho(g, s);
     var a = s.audio || { ok: false, text: 'Audio-Dienst nicht verbunden' };
-    var ls = wrap2(a.text, 40);
+    var ls = wrap2(a.text, 38);
     g.rrect(28, 470 - 13, 12, 12, 6, a.ok ? C.ok : C.crit);
-    for (var j = 0; j < ls.length; j++) g.text(ls[j], 50, 470 - 2 + j * 26, 19, C.dim, 'left', 'light');
+    for (var j = 0; j < ls.length; j++) g.text(ls[j], 50, 470 - 1 + j * 28, 21, C.dim, 'left', 'light');
 
     if (s.diag) { drawDiag(g, s); return; }
 
@@ -148,7 +149,7 @@
         g.rrect(c.x, c.y, c.w, c.h, c.r, C.accent);
         g.rect(c.x + 4, c.y + 2, c.w - 8, 2, C.hi); // Lichtkante oben
       } else tile(g, c.x, c.y, c.w, c.h, c.r, C.panel, C.edge);
-      g.text(s.profiles[i].name, c.x + c.w / 2, c.y + c.h / 2 + 9, 26, active ? '#ffffff' : '#c3ccd7', 'center', active ? false : 'light');
+      g.text(s.profiles[i].name, c.x + c.w / 2, c.y + c.h / 2 + 10, s.wide ? 30 : 26, active ? '#ffffff' : '#c3ccd7', 'center', active ? false : 'light');
     }
 
     // ---- Lautstärke: [−] ——●—— [+], Wert über dem Regler ------------------

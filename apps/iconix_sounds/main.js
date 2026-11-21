@@ -25,11 +25,15 @@ const AudioLink = require('./audio_link');
 const VehicleFeed = require('./vehicle_feed');
 const CarRoute = require('./car_route');
 
-const VERSION = '0.9.9';
-const ROUTE_GRACE_MS = 3000; // so lange nach dem letzten Ton bleibt die Audiomanager-Verbindung bestehen
+const VERSION = '1.0.0';
+// Audiomanager-Verbindung: Sie braucht im Auto ~6 s, bis sie hörbar ist (CS_CONNECTED). Darum wird sie schon beim
+// Aufwachen des Autos aufgebaut (erste Fahrzeugdaten) und gehalten, solange der Motor läuft oder kürzlich lief –
+// sonst fehlten bei jedem Motorstart und nach jeder Pause ein paar Sekunden Ton.
+const ROUTE_KEEP_MS = 120000;  // so lange nach dem letzten Lebenszeichen (Ton, laufender Motor, Aufwachen) halten
+const WAKE_GAP_MS = 300000;    // so lange ohne Fahrzeugdaten = das Auto hat geschlafen
 const DEFAULTS = {
   enabled: true, profile: Profiles.DEFAULT, volume: 80, intensity: 70, sport: false,
-  muteParked: false, duck: true, followMode: true, wide: false, speedVol: 4, startSound: true, bassDb: 0, bark: 100, hiss: 100, loadSource: 'auto', route: CarRoute.DEFAULT_ROUTE, alsaDevice: 'auto', maxTorque: 400, carIdle: 800, carRedline: 4800
+  muteParked: false, duck: true, knobMusic: true, followMode: true, wide: true, speedVol: 4, startSound: true, bassDb: 0, bark: 100, hiss: 100, loadSource: 'auto', route: CarRoute.DEFAULT_ROUTE, alsaDevice: 'auto', maxTorque: 400, carIdle: 800, carRedline: 4800
 };
 
 function setting(settings, key) {
@@ -86,17 +90,25 @@ function startCore(host) {
     // Gerät für den Dienst: SmartX-Kanal des Tonwegs, bei "ALSA direkt" das frühere Ausgabegerät
     const rt = CarRoute.route(synthCfgCache.route);
     synthCfgCache.device = rt.device || String(g('alsaDevice') || 'auto');
-    uiCfg = { muteParked: bool(g('muteParked')), duck: bool(g('duck')), wide: bool(g('wide')) };
+    uiCfg = { muteParked: bool(g('muteParked')), duck: bool(g('duck')), wide: bool(g('wide')), knobMusic: bool(g('knobMusic')) };
   };
   refresh();
 
   const link = new AudioLink(log, VERSION);
   const feed = new VehicleFeed(host.signals, log, () => feedCfg);
   const synthCfg = () => synthCfgCache;
-  let ducked = false;
-  const pushCfg = () => { refresh(); synthCfgCache.duck = ducked; link.configure(synthCfgCache); if (core) core.route.setDuck(uiCfg.duck); };
+  let ducked = false, held = true;   // held: Kanal gerade nicht hörbar (noch nicht verbunden, weg, Knopf gedreht) -> leise
+  const pushCfg = () => {
+    refresh(); synthCfgCache.duck = ducked; synthCfgCache.hold = held; link.configure(synthCfgCache);
+    if (core) { core.route.setDuck(uiCfg.duck); core.route.setKnob(uiCfg.knobMusic); }
+  };
+  let lastActivity = 0, lastData = 0;
 
   feed.on('sample', s => {
+    const now = Date.now();
+    // Aufwachen (erste Daten nach Schlaf/Start) oder laufender Motor halten den Tonweg bereit
+    if (now - lastData > WAKE_GAP_MS || s.rpm > 300) lastActivity = now;
+    lastData = now;
     last = s;
     link.params(s);
     const shouldMute = uiCfg.muteParked && s.speed < 0.5;
@@ -110,22 +122,29 @@ function startCore(host) {
   link.connect();
   feed.start();
 
-  // Audiomanager-Verbindung, solange der Dienst Ton ausgeben will (Fahrt, Testsound) und kurz danach
+  // Audiomanager-Verbindung: ab dem Aufwachen und solange der Motor läuft (oder Ton gewünscht ist) – siehe ROUTE_KEEP_MS
   const route = new CarRoute(host.signals, log, host.dataDir);
-  let lastSound = 0;
+  // hörbar oder nicht (verbindet noch, Verbindung weg, Lautstärkeknopf gedreht): Ton weich aus- bzw. einblenden
+  route.onChange = audible => { if (held === !audible) return; held = !audible; synthCfgCache.hold = held; link.configure(synthCfgCache); };
   setInterval(() => {
     const ds = link.connected ? link.daemonStatus : (link.local ? link.localStatus : null);
     const now = Date.now();
-    if (ds && (ds.wants || ds.playing)) lastSound = now;
-    route.want(synthCfgCache.route, lastSound > 0 && now - lastSound < ROUTE_GRACE_MS);
+    if (ds && (ds.wants || ds.playing) && last && last.rpm > 100) lastActivity = now;
+    if (ds && ds.devTest) lastActivity = now;
+    route.want(synthCfgCache.route, bool(setting(settings, 'enabled')) && lastActivity > 0 && now - lastActivity < ROUTE_KEEP_MS);
     // Telefon, Navi-Ansage, Parkpiepser: Motorsound absenken (CarRoute beobachtet den Audiomanager)
     if (route.ducked !== ducked) { ducked = route.ducked; synthCfgCache.duck = ducked; link.configure(synthCfgCache); }
   }, 500);
   route.setDuck(uiCfg.duck);
+  route.setKnob(uiCfg.knobMusic);
   route.start();
   log.info('iconix: Kern gestartet, Version ' + VERSION + ', Tonweg ' + synthCfgCache.route);
 
-  core = { link, feed, route, pushCfg, synthCfg, ui: () => uiCfg, log, last: () => last };
+  // Testsound: Tonweg sofort bereitstellen; ist er noch nicht hörbar (verbindet ~6 s), startet der Test, sobald er es ist
+  let pendingTest = 0;
+  const test = () => { lastActivity = Date.now(); if (route.audible()) link.test(); else pendingTest = Date.now(); };
+  setInterval(() => { if (pendingTest && (route.audible() || Date.now() - pendingTest > 10000)) { pendingTest = 0; link.test(); } }, 250);
+  core = { link, feed, route, pushCfg, synthCfg, test, ui: () => uiCfg, log, last: () => last };
   return core;
 }
 
@@ -220,8 +239,12 @@ mgu.run({
 
     // Buttons aus app.json
     ctx.ui.onClick('BTN_PROFILE', nextProfile);
+    // Wo das Kit den Bildschirm führt: Sound wählt man über die Kacheln, die Einstellungen über den Reiter oben –
+    // "Sound wechseln" aus der unteren Leiste nehmen (Einstellungen blendet das Kit dort ohnehin aus), sonst reicht
+    // die Breite nicht und "Audio-Diagnose" wird abgeschnitten
+    if (ctx.hideButton) ctx.hideButton('BTN_PROFILE');
     ctx.ui.onClick('BTN_MUTE', () => set('enabled', !bool(get('enabled'))));
-    ctx.ui.onClick('BTN_TEST', () => c.link.test());
+    ctx.ui.onClick('BTN_TEST', () => c.test());
     // Audio-Diagnose: zeigt, welche Tonwege es auf diesem Head Unit gibt (an-/ausschalten)
     // Oben der Tonweg (Audiomanager: Verbindungen, Quellen, Senken – kommt asynchron), darunter Dienst und App.
     let diag = null, routeLines = ['--- Tonweg (Audiomanager) ---', '(wird abgefragt ...)'];
@@ -288,7 +311,7 @@ mgu.run({
       st.profile = cfg.profile;
       st.rpm = s ? s.rpm : 0; st.speed = s ? s.speed : 0;
       st.redline = cfg.carRedline; st.volume = cfg.volume; st.enabled = cfg.enabled;
-      st.sport = cfg.sport; st.demo = !s; st.mode = cfg.mode; st.wide = c.ui().wide;
+      st.sport = cfg.sport; st.demo = !s; st.mode = cfg.mode; st.wide = c.ui().wide; st.own = own;
       st.audio = a;
       st.diag = diag;
       UI.draw(g, st);

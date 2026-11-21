@@ -27,7 +27,7 @@ import os, sys, time
 dev, rate, buf_us, ch = sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5])
 fb = 2 * ch
 bufn = rate * buf_us // 1000000
-sys.stderr.write('alsa_play: spielt auf %s mit %d Hz, %d Kanal/Kanäle, Puffer %d ms, Periode %d ms\\n' % (dev, rate, ch, buf_us // 1000, buf_us // 4000))
+sys.stderr.write('alsa_play: spielt auf %s mit %d Hz, %d Kanal/Kanäle, Puffer %d ms, Periode %d ms, Echtzeit ja\\n' % (dev, rate, ch, buf_us // 1000, buf_us // 4000))
 sys.stderr.flush()
 log = open(os.environ['FAKE_LOG'], 'w')
 total = 0; base = 0; t0 = None; pend = b''
@@ -71,6 +71,7 @@ const py = findPython();
 if (!py) { console.log('übersprungen: kein Python 3'); process.exit(0); }
 process.env.ICONIX_PYTHON = py;
 process.env.FAKE_LOG = LOG;
+process.env.ICONIX_IDLE_STOP_MS = '3000';   // im Auto 30 s, hier kürzer
 
 const E = require(path.join(dir, 'engine.js'));
 const logs = [];
@@ -98,6 +99,7 @@ setTimeout(() => {
   ok(st.playing && /smartx/.test(st.backend || ''), 'Ton läuft über den SmartX-Player (' + st.backend + ')');
   ok(st.outRate === 24000 && st.outCh === 1, 'Format 24 kHz mono');
   ok(st.bufMs === 30, 'Puffergröße vom Player übernommen (' + st.bufMs + ' ms)');
+  ok(st.rt === 'ja', 'Echtzeit-Meldung des Players übernommen (' + st.rt + ')');
 }, 5000);
 
 setTimeout(() => {

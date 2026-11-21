@@ -17,7 +17,7 @@ const E = require(path.join(ROOT, 'tools/iconix-audiod/engine.js'));
 // ---- nachgebauter Audiomanager ------------------------------------------------
 function fakeAm(opts) {
   opts = opts || {};
-  const am = { conns: opts.conns || [], nextId: 50, calls: [], avail: {} };
+  const am = { conns: opts.conns || [], nextId: 50, calls: [], avail: {}, vol: 20, state: opts.state };
   const signals = {
     proxy: async (iface, inst) => {
       assert.strictEqual(inst, '1');
@@ -28,12 +28,12 @@ function fakeAm(opts) {
       am.calls.push(method + ' ' + JSON.stringify(params));
       if (method === 'getListMainConnections') return { listConnections: am.conns.map((c) => Object.assign({}, c)) };
       if (method === 'getListMainSources') return { listMainSources: opts.sources || [{ sourceID: 287, name: 'CarLifeMedia' }, { sourceID: 1048, name: 'OAPGenericOverlay' }] };
-      if (method === 'getListMainSinks') return { listMainSinks: [{ sinkID: 1024, name: 'MediaSink_Front' }] };
+      if (method === 'getListMainSinks') return { listMainSinks: [{ sinkID: 1024, name: 'MediaSink_Front' }, { sinkID: 1, name: 'MainSink', volume: am.vol }] };
       if (method === 'hookSourceAvailablityStatusChange') { am.avail[params.sourceID] = params.availability.availability; return {}; }
       if (method === 'connect') {
         if (opts.refuse) return { amError: 'E_NOT_POSSIBLE', mainConnectionID: null };
         const id = am.nextId++;
-        am.conns.push({ mainConnectionID: id, sourceID: params.sourceID, sinkID: params.sinkID, connectionState: 2 });
+        am.conns.push({ mainConnectionID: id, sourceID: params.sourceID, sinkID: params.sinkID, connectionState: am.state != null ? am.state : 2 });
         return { amError: 'E_OK', mainConnectionID: id };
       }
       if (method === 'disconnect') { am.conns = am.conns.filter((c) => c.mainConnectionID !== params.mainConnectionID); return { amError: 'E_OK' }; }
@@ -549,10 +549,10 @@ test('Startsound: Motor aus -> an spielt Anlassen, Hochdrehen, Leerlauf; aus = k
   const run = (startSound) => { const s = new Synth(24000); s.configure({ profile: 'supra', volume: 0.8, enabled: true, startSound }); s._setProfile('supra');
     const f = new Float32Array(480); let maxRpm = 0, pk = 0, crank = 0;
     for (let k = 0; k < 400; k++) { const t = k / 100; s.setParams({ rpm: t < 1 ? 0 : 820, load: 0.04, speed: 0 }); pk = Math.max(pk, s.render(f, 240));
-      if (t > 1 && t < 4) maxRpm = Math.max(maxRpm, s.rpm); if (t > 1.05 && t < 1.3) crank = Math.max(crank, s.rpm); }
+      if (t > 1 && t < 4) maxRpm = Math.max(maxRpm, s.rpm); if (t > 1.05 && t < 1.2) crank = Math.max(crank, s.rpm); }
     return { maxRpm, pk, crank, endRpm: s.rpm }; };
   const on = run(true), off = run(false), idle = Profiles.get('supra').idleRpm;
-  assert.ok(on.maxRpm > idle * 1.5, 'Hochdrehen: ' + Math.round(on.maxRpm));
+  assert.ok(on.maxRpm > idle * 1.2 && on.maxRpm < idle * 1.6, 'kurzes Hochdrehen: ' + Math.round(on.maxRpm));
   assert.ok(on.crank < 320, 'Anlassen mit Starterdrehzahl: ' + Math.round(on.crank));
   assert.ok(Math.abs(on.endRpm - idle) < 60, 'danach Leerlauf: ' + Math.round(on.endRpm));
   assert.ok(off.maxRpm < idle * 1.15, 'ohne Startsound kein Hochdrehen: ' + Math.round(off.maxRpm));
@@ -597,6 +597,104 @@ test('Einstellungen der neuen Funktionen vorhanden', () => {
   const by = Object.fromEntries(j.settings.map((x) => [x.key, x]));
   assert.strictEqual(by.speedVol.default, 4); assert.strictEqual(by.startSound.default, true);
   ['bassDb', 'bark', 'hiss'].forEach((k) => assert.strictEqual(by[k].group, 'Klang anpassen'));
+});
+
+test('Lautstärkeknopf: Drehen gibt den Knopf der Musik (Motorsound stumm, Verbindung frei), nach Ruhe zurück', async () => {
+  const { am, signals } = fakeAm();
+  const r = new CarRoute(signals, quiet, null);
+  const changes = [];
+  r.onChange = (a) => changes.push(a);
+  r.want('overlay', true);
+  await r._step();
+  assert.strictEqual(r.state, 'verbunden');
+  assert.ok(r.audible(), 'verbunden + CS_CONNECTED = hörbar');
+  await r._knobTick();                       // Ausgangswert lesen
+  am.vol = 23;                               // Knopf gedreht
+  await r._knobTick();
+  assert.ok(r.knobHeld(), 'Knopf gedreht erkannt');
+  assert.ok(!r.audible(), 'Motorsound stumm');
+  assert.ok(changes.includes(false));
+  await r._step();
+  assert.strictEqual(am.conns.length, 0, 'Verbindung freigegeben -> Knopf regelt wieder die Musik');
+  assert.ok(/Pause/.test(r.state));
+  am.vol = 25; await r._knobTick();          // weiter gedreht: bleibt frei
+  await r._step();
+  assert.strictEqual(am.conns.length, 0);
+  r.knobAt = Date.now() - 2000;              // 2 s Ruhe
+  await r._step();
+  assert.strictEqual(am.conns.length, 1, 'nach Ruhe wieder verbunden');
+  assert.ok(r.audible());
+  // Einstellung aus: Drehen ändert nichts (Knopf regelt dann den Motorsound, wie im Auto vorgesehen)
+  r.setKnob(false); am.vol = 30; await r._knobTick(); await r._step();
+  assert.ok(!r.knobHeld() && am.conns.length === 1);
+});
+
+test('Hörbar erst ab CS_CONNECTED (Auto braucht ~6 s); verlorene Verbindung sofort stumm', async () => {
+  const { am, signals } = fakeAm({ state: 1 });  // CS_CONNECTING
+  const r = new CarRoute(signals, quiet, null);
+  r.want('overlay', true);
+  await r._step();
+  assert.ok(r.conn && !r.audible(), 'verbindet noch: stumm');
+  am.conns.forEach((c) => { c.connectionState = 2; });
+  r.lastVerify = 0; await r._step();
+  assert.ok(r.audible(), 'jetzt verbunden: hörbar');
+  am.conns = [];                              // CarPlay-Navi übernimmt den Overlay-Platz
+  await r._pollDuck();
+  assert.ok(!r.conn && !r.audible(), 'Verbindung weg -> stumm, bis neu verbunden');
+  await r._step();
+  assert.ok(r.conn, 'gleich neu verbunden (kurze Wartezeit)');
+  // ohne CS_CONNECTED-Meldung: spätestens nach AUDIBLE_AFTER_MS hörbar
+  const r2 = new CarRoute(fakeAm({ state: 1 }).signals, quiet, null);
+  r2.want('overlay', true); await r2._step();
+  r2.conn.at = Date.now() - CarRoute.AUDIBLE_AFTER_MS - 10;
+  assert.ok(r2.audible());
+  // Wege ohne Audiomanager sind immer hörbar
+  const r3 = new CarRoute(fakeAm().signals, quiet, null); r3.want('carplay', true);
+  assert.ok(r3.audible());
+});
+
+test('Synth: hold blendet weich aus und wieder ein, ohne Knacken', () => {
+  const s = new Synth(24000); s.configure({ profile: 'turbo4', volume: 0.8, enabled: true }); s._setProfile('turbo4');
+  const f = new Float32Array(480), out = [];
+  for (let k = 0; k < 300; k++) { if (k === 100) s.configure({ hold: true }); if (k === 200) s.configure({ hold: false });
+    s.setParams({ rpm: 2500, load: 0.4, speed: 80 }); s.render(f, 240); for (let i = 0; i < 480; i += 2) out.push(f[i]); }
+  let held = 0; for (let i = 24000 * 1.6; i < 24000 * 2; i++) held = Math.max(held, Math.abs(out[i]));
+  let back = 0; for (let i = 24000 * 2.6; i < 24000 * 3; i++) back = Math.max(back, Math.abs(out[i]));
+  assert.ok(held < 0.003 && back > 0.1, 'gehalten ' + held.toFixed(4) + ', zurück ' + back.toFixed(3));
+  let step = 0; for (let i = 24000 * 0.95; i < 24000 * 1.3; i++) step = Math.max(step, Math.abs(out[i] - out[i - 1]));
+  let ref = 0; for (let i = 24000 * 0.5; i < 24000 * 0.9; i++) ref = Math.max(ref, Math.abs(out[i] - out[i - 1]));
+  assert.ok(step <= ref * 1.5, 'kein Sprung beim Ausblenden');
+});
+
+test('Motor aus: Drehzahl 0 kommt nur einmal – App sendet bis 2 min weiter, laufender Motor ohne Daten nicht', () => {
+  const AudioLink = require(path.join(ROOT, 'apps/iconix_sounds/audio_link.js'));
+  const l = new AudioLink(quiet, 'test');
+  const sent = []; l.connected = true; l.send = (m) => { sent.push(m); return true; };
+  const realNow = Date.now; let t = 1e12; Date.now = () => t;
+  try {
+    l.params({ rpm: 0, load: 0, speed: 0, overrun: false, at: t });
+    t += 60000; l.lastSend = 0; l._tick();
+    assert.ok(sent.length >= 2 && sent[sent.length - 1].rpm === 0, 'Motor aus: Lebenszeichen nach 60 s');
+    t += 70000; const n = sent.length; l.lastSend = 0; l._tick();
+    assert.strictEqual(sent.length, n, 'nach über 2 min nicht mehr');
+    l.params({ rpm: 2500, load: 0.5, speed: 80, overrun: false, at: t });
+    t += 3000; const m = sent.length; l.lastSend = 0; l._tick();
+    assert.strictEqual(sent.length, m, 'laufender Motor ohne neue Daten: nicht weiter senden (sonst hinge der Ton)');
+  } finally { Date.now = realNow; }
+});
+
+test('Oberfläche im Auto (Kit führt den Bildschirm): kein doppelter Titel, breite Ansicht ist Standard', () => {
+  const UI = require(path.join(ROOT, 'apps/iconix_sounds/ui.js'));
+  const texts = [];
+  const g = { rect() {}, rrect() {}, line() {}, arc() {}, text(t) { texts.push(String(t)); } };
+  UI.draw(g, { profiles: Profiles.list, profile: 'turbo4', rpm: 900, speed: 0, volume: 0.8, enabled: true, own: true, wide: true, audio: { ok: true, text: 'x' } });
+  assert.ok(!texts.includes('Sound Drive'), 'Titel steht schon im Kopf des Kits');
+  const j = JSON.parse(fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/app.json'), 'utf8'));
+  const by = Object.fromEntries(j.settings.map((x) => [x.key, x]));
+  assert.strictEqual(by.wide.default, true);
+  assert.strictEqual(by.knobMusic.default, true);
+  const src = fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/main.js'), 'utf8');
+  assert.ok(/hideButton\('BTN_PROFILE'\)/.test(src), 'untere Leiste ohne "Sound wechseln"');
 });
 
 (async () => {

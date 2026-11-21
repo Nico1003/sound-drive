@@ -167,6 +167,17 @@ def cmd_list(extra=None):
     print(json.dumps({'devices': res}))
 
 
+def realtime():
+    """Echtzeit-Priorität (SCHED_RR) für den Player: Auf einem ausgelasteten Head Unit (Kamera beim Parken, viele
+    Apps) kam er sonst zu spät an die Reihe -> Aussetzer, die als Knistern/Fehlgeräusch zu hören sind. Der Dienst
+    läuft als root und darf das. Gibt 'ja' oder den Grund zurück."""
+    try:
+        os.sched_setscheduler(0, os.SCHED_RR, os.sched_param(5))
+        return 'ja'
+    except Exception as e:
+        return 'nein (%s)' % (getattr(e, 'strerror', None) or e.__class__.__name__)
+
+
 def cmd_play(dev, rate, latency_us=200000, channels=2):
     lib = load_alsa()
     smartx_lock(dev)
@@ -177,8 +188,9 @@ def cmd_play(dev, rate, latency_us=200000, channels=2):
         return 2
     bsize, psize = ctypes.c_ulong(0), ctypes.c_ulong(0)
     lib.snd_pcm_get_params(h, ctypes.byref(bsize), ctypes.byref(psize))
-    sys.stderr.write('alsa_play: spielt auf %s mit %d Hz, %d Kanal/Kanäle, Puffer %d ms, Periode %d ms\n' % (
-        dev, rate, channels, bsize.value * 1000 // max(1, rate), psize.value * 1000 // max(1, rate)))
+    rt = realtime()
+    sys.stderr.write('alsa_play: spielt auf %s mit %d Hz, %d Kanal/Kanäle, Puffer %d ms, Periode %d ms, Echtzeit %s\n' % (
+        dev, rate, channels, bsize.value * 1000 // max(1, rate), psize.value * 1000 // max(1, rate), rt))
     sys.stderr.flush()
     frame_bytes = 2 * channels
     chunk = 1024 * frame_bytes

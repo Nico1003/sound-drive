@@ -15,7 +15,9 @@ RuntimeDirectoryMode=0755
 ExecStart=/bin/sh /var/opt/iconix-audiod/current/iconix-audiod.sh
 Restart=always
 RestartSec=3
-Nice=-5
+Nice=-10
+# Echtzeit-Priorität für den Player (alsa_play.py setzt SCHED_RR selbst): erlauben, auch falls nicht als root
+LimitRTPRIO=10
 # Eigenes Abspielkommando oder ALSA-Gerät hier setzen, falls die automatische Suche nicht passt:
 # Environment=ICONIX_DEVICE=default
 # Environment=ICONIX_PLAYER=aplay -q -t raw -f S16_LE -r {rate} -c 2 -

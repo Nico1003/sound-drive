@@ -26,15 +26,15 @@ const IDLE_TICK_MS = 200;    // ohne Ton nur 5 Wakeups/s; neue Fahrzeugdaten ode
 const LEAD_MS = Number(process.env.ICONIX_LEAD_MS) || 160;
 // Mit Rückmeldung des Players (alsa_play.py meldet gespielte Frames): so viel Ton steht höchstens an
 // (ALSA-Puffer + Pipe). Das ist die Verzögerung zwischen Fahrzeugdaten und Lautsprecher.
-// Untergrenze 50 ms (siehe FB_LEAD_START für den Start und die Anpassung).
-const FB_LEAD_MS = Number(process.env.ICONIX_FB_LEAD_MS) || 50;
+// Untergrenze 60 ms (siehe FB_LEAD_START für den Start und die Anpassung).
+const FB_LEAD_MS = Number(process.env.ICONIX_FB_LEAD_MS) || 60;
 const FB_LEAD_MAX = 200;
 // Start großzügig (Head Unit beim Hochfahren ausgelastet -> sonst Aussetzer/Quietschen), danach alle 10 s
 // ohne Aussetzer 10 ms knapper bis FB_LEAD_MS; bei einem Aussetzer sofort +30 ms.
 const FB_LEAD_START = 100;
 const BUFFER_US = Number(process.env.ICONIX_BUFFER_US) || 200000; // Puffer des Abspielprogramms
 const STALE_MS = 1500;       // ohne Daten -> ausblenden
-const IDLE_STOP_MS = 8000;   // so lange still -> Abspielprogramm beenden (gibt das Audiogerät frei)
+const IDLE_STOP_MS = Number(process.env.ICONIX_IDLE_STOP_MS) || 30000;  // so lange still -> Abspielprogramm beenden (gibt das Audiogerät frei); kurz = Neustart bei jedem Halt
 const MAX_CHUNK = 4096;
 const SMARTX_BUFFER_US = Number(process.env.ICONIX_SMARTX_BUFFER_US) || 30000; // SmartX: kurzer Puffer
 const SMARTX_RETRY_MS = 3000; // SmartX-Kanal ließ sich nicht öffnen -> so oft erneut probieren
@@ -290,7 +290,7 @@ Output.prototype.start = function () {
       return;
     }
     const mb = /Puffer (\d+) ms/.exec(line);
-    if (mb) { self.bufMs = Number(mb[1]); log(b.name + ': ' + line); return; }
+    if (mb) { self.bufMs = Number(mb[1]); const mr = /Echtzeit (.*)$/.exec(line); self.rt = mr ? mr[1] : null; log(b.name + ': ' + line); return; }
     self.lastErr = line.slice(0, 120); log(b.name + ': ' + line);
   });
   child.stdin.on('error', function () { /* EPIPE -> exit folgt */ });
@@ -538,7 +538,7 @@ Engine.prototype.status = function () {
     ok: !out.error,
     backend: out.backend || (out.list[0] && !out.error ? out.list[0].name : null),
     rate: RATE, playing: !!out.child, error: out.error, profile: this.synth.cfg.profile,
-    underruns: out.underruns || 0, late: this.late, bufMs: out.child ? out.bufMs || null : null, ducked: !!this.synth.cfg.duck, leadMs: out.played != null && out.child ? (this.fbLead || FB_LEAD_MS) : LEAD_MS,
+    underruns: out.underruns || 0, late: this.late, bufMs: out.child ? out.bufMs || null : null, rt: out.child ? out.rt || null : null, ducked: !!this.synth.cfg.duck, leadMs: out.played != null && out.child ? (this.fbLead || FB_LEAD_MS) : LEAD_MS,
     players: out.list.map(function (b) { return b.name; }),
     device: this.device, resolved: out.opts.device, python: findPython(),
     wants: !!this.wantSound, outRate: out.fmt.rate, outCh: out.fmt.ch,

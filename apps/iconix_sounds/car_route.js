@@ -27,7 +27,7 @@ const INSTANCE = '1';
 const SINK_FRONT = 1024, SINK_MAIN = 1;
 const CHECK_MS = 1500;      // Takt der Steuerung
 const VERIFY_MS = 5000;     // so oft prüfen, ob die eigene Verbindung noch besteht
-const RETRY_MS = 5000;      // nach einem Fehler so lange warten
+const RETRY_MS = 1500;      // nach einem Fehler (z. B. E_NOT_POSSIBLE während einer CarPlay-Ansage) so schnell erneut
 const CALL_MS = 5000;
 
 // device: Kanal für den Dienst. "smartx:<Name>" löst der Dienst gegen die Kanäle in /dev/shm auf
@@ -48,6 +48,13 @@ const DEFAULT_ROUTE = 'overlay';
 const DUCK_RE = /phone|tel|call|hfp|handsfree|siri|assist|sds|pdc|park|chime|gong|warn|alert|ecall|bcall/i;
 const NO_DUCK_RE = /media|radio|tuner|usb|a2dp|music|audio_stream|carlife|overlay|iconix|navi|guidance|tts|prompt|announce|traffic/i;
 const DUCK_POLL_MS = 1500;
+// Lautstärkeknopf: Das Auto behandelt unsere Quelle wie eine Durchsage – solange sie verbunden ist, regelt der Knopf
+// sie statt der Musik (so beschrieben von loenne007/idrive-enginesound). Die Lautstärke, die der Knopf bewegt, steht
+// bei der Haupt-Senke (1). Ändert sie sich, tritt der Motorsound zur Seite (stumm, Verbindung frei), der Knopf gehört
+// wieder der Musik; nach KNOB_REST_MS ohne Drehen kommt der Sound zurück.
+const KNOB_POLL_MS = 400, KNOB_REST_MS = 1500;
+// Eine Verbindung gilt als hörbar, sobald sie CS_CONNECTED meldet (im Auto ~6 s nach connect) – spätestens nach 8 s.
+const AUDIBLE_AFTER_MS = 8000;
 const CS = ['CS_UNKNOWN', 'CS_CONNECTING', 'CS_CONNECTED', 'CS_DISCONNECTING', 'CS_DISCONNECTED', 'CS_SUSPENDED'];
 
 function bootId() {
@@ -96,6 +103,10 @@ class CarRoute {
     this.ducked = false; this.duckBy = null;
     this.duckBusy = false; this.lastDuck = 0;
     this.srcNames = {}; this.srcAt = 0;
+    this.knobOn = true;         // Einstellung "Lautstärkeknopf regelt die Musik"
+    this.knobVol = null; this.knobAt = 0; this.knobBusy = false; this.knobTimer = null; this.knobErr = null;
+    this.onChange = null;       // fn(): hörbar/gehalten hat sich geändert (die App schaltet den Ton weich)
+    this.lastAudible = null;
   }
 
   static routes() { return ROUTES; }
@@ -104,7 +115,55 @@ class CarRoute {
   start() {
     if (this.timer) return;
     this.timer = setInterval(() => this._step(), CHECK_MS);
+    this.knobTimer = setInterval(() => this._knobTick(), KNOB_POLL_MS);
     this._step();
+  }
+
+  /** Lautstärkeknopf der Musik überlassen an/aus (Einstellung). */
+  setKnob(on) { this.knobOn = !!on; if (!on) this.knobAt = 0; }
+
+  /** Gerade gedreht (oder vor < KNOB_REST_MS): Motorsound macht Platz. */
+  knobHeld() { return this.knobOn && this.knobAt > 0 && Date.now() - this.knobAt < KNOB_REST_MS; }
+
+  /**
+   * Hört man unseren Kanal gerade? Wege ohne Audiomanager immer; sonst nur mit bestehender Verbindung, die
+   * verbunden meldet (oder seit AUDIBLE_AFTER_MS besteht) und solange der Knopf nicht gerade gedreht wird.
+   */
+  audible() {
+    if (!this.needsAm()) return true;
+    if (!this.conn || this.knobHeld()) return false;
+    return this.connState === 'CS_CONNECTED' || Date.now() - (this.conn.at || 0) > AUDIBLE_AFTER_MS;
+  }
+
+  _changed() {
+    const a = this.audible();
+    if (a !== this.lastAudible) { this.lastAudible = a; if (this.onChange) { try { this.onChange(a); } catch (e) { /* egal */ } } }
+  }
+
+  /** Lautstärke der Haupt-Senke lesen; jede Änderung = Knopf gedreht. Nur solange unser Weg gewünscht ist. */
+  async _knobTick() {
+    this._changed();
+    if (!this.knobOn || !this.needsAm() || !(this.wanted || this.conn) || this.knobBusy) return;
+    this.knobBusy = true;
+    try {
+      if (!(await this._proxies())) return;
+      const sinks = listOf(await this._call(this.am, 'getListMainSinks', {}, 1500), ['listMainSinks']);
+      const s1 = sinks.filter((x) => x.sinkID === SINK_MAIN)[0];
+      const v = s1 ? Number(s1.volume) : NaN;
+      this.knobErr = s1 ? null : 'Haupt-Senke 1 fehlt';
+      if (isFinite(v)) {
+        if (this.knobVol !== null && v !== this.knobVol) {
+          const was = this.knobHeld();
+          this.knobAt = Date.now();
+          if (!was) {
+            this.log.info('iconix: Lautstärkeknopf gedreht (' + this.knobVol + ' -> ' + v + ') – Motorsound macht der Musik Platz');
+            this._changed();
+            setTimeout(() => this._step(), 150);   // erst ausblenden (App), dann Verbindung freigeben
+          }
+        }
+        this.knobVol = v;
+      }
+    } catch (e) { this.knobErr = String(e && e.message || e).slice(0, 60); } finally { this.knobBusy = false; }
   }
 
   /** Gewünschten Weg und ob gerade Ton gebraucht wird setzen; die Steuerung folgt im nächsten Takt. */
@@ -127,6 +186,16 @@ class CarRoute {
     try {
       if (!(await this._proxies())) return;
       const list = await this._connections();
+      // eigene Verbindung weg (z. B. CarPlay-Navi hat den Overlay-Platz übernommen)? sofort merken -> stumm
+      const c0 = this.conn;
+      if (c0 && !this.busy && !list.some((x) => (c0.id != null && x.id === c0.id) || (x.source === c0.source && x.sink === c0.sink))) {
+        this.log.warn('iconix: AM-Verbindung ' + c0.id + ' ist weg – verbinde neu');
+        this.conn = null; this.connState = null; this.nextTry = 0; this.state = 'verbinde';
+        this._save(); this._changed();
+      } else if (c0) {
+        const hit0 = list.filter((x) => (c0.id != null && x.id === c0.id) || (x.source === c0.source && x.sink === c0.sink))[0];
+        if (hit0 && hit0.state && hit0.state !== this.connState) { this.log.info('iconix: AM-Verbindung ' + hit0.id + ': ' + hit0.state); this.connState = hit0.state; this._changed(); }
+      }
       const own = this.conn ? this.conn.source : null;
       const active = list.filter((c) => c.source !== own && (!c.state || c.state === 'CS_CONNECTED' || c.state === 'CS_CONNECTING'));
       // Namen der Quellen nachladen, wenn eine unbekannt ist (höchstens alle 30 s)
@@ -215,11 +284,11 @@ class CarRoute {
     if (this.duckOn && this.wanted && now - this.lastDuck >= DUCK_POLL_MS) this._pollDuck();
     else if (!this.wanted && this.ducked) { this.ducked = false; this.duckBy = null; }
     if (this.busy) return;
-    const target = this.wanted && this.needsAm() ? this.routeId : null;
+    const target = this.wanted && this.needsAm() && !this.knobHeld() ? this.routeId : null;
     const r = target ? ROUTES[target] : null;
     // nichts zu tun?
     if (!target && !this.conn) { this.state = this.lastError ? 'Fehler' : 'aus'; return; }
-    if (target && this.conn && this.conn.routeId === target && now - this.lastVerify < VERIFY_MS) return;
+    if (target && this.conn && this.conn.routeId === target && now - this.lastVerify < (this.connState === 'CS_CONNECTED' ? VERIFY_MS : CHECK_MS - 100)) return;
     if (target && !this.conn && now < this.nextTry) return;
     this.busy = true;
     try {
@@ -227,7 +296,7 @@ class CarRoute {
       if (!this.cleanupDone) await this._cleanup();
       // falscher Weg oder nicht mehr gewünscht -> trennen
       if (this.conn && (!target || this.conn.routeId !== target)) await this._disconnect();
-      if (!target) { this.state = 'aus'; return; }
+      if (!target) { this.state = this.knobHeld() ? 'Pause (Lautstärkeknopf)' : 'aus'; return; }
       if (this.conn) await this._verify();
       else await this._connect(target, r);
     } catch (e) {
@@ -249,7 +318,7 @@ class CarRoute {
     for (let i = 0; i < same.length; i++) {
       if (same[i].sink === r.sink) {
         // besteht schon (z. B. von einem früheren Lauf): übernehmen
-        this.conn = { id: same[i].id, routeId: id, source: r.source, sink: r.sink };
+        this.conn = { id: same[i].id, routeId: id, source: r.source, sink: r.sink, at: Date.now() - AUDIBLE_AFTER_MS };
         this.connState = same[i].state;
         this.state = 'verbunden'; this.lastError = null; this.lastVerify = Date.now();
         this._save();
@@ -266,16 +335,15 @@ class CarRoute {
       throw new Error('connect ' + r.source + '->' + r.sink + ' abgelehnt: ' + errOf(res));
     }
     let cid = res && res.mainConnectionID;
-    if (cid == null) {
-      // E_ALREADY_EXISTS oder ohne ID: in der Liste suchen
-      try {
-        const hit = (await this._connections()).filter(function (c) { return c.source === r.source && c.sink === r.sink; })[0];
-        if (hit) { cid = hit.id; this.connState = hit.state; }
-      } catch (e) { /* egal */ }
-    }
-    this.conn = { id: cid, routeId: id, source: r.source, sink: r.sink };
+    // ID (bei E_ALREADY_EXISTS fehlt sie) und Zustand gleich aus der Liste – hörbar ist sie erst ab CS_CONNECTED
+    this.connState = null;
+    try {
+      const hit = (await this._connections()).filter(function (c) { return (cid != null && c.id === cid) || (c.source === r.source && c.sink === r.sink); })[0];
+      if (hit) { if (cid == null) cid = hit.id; this.connState = hit.state; }
+    } catch (e) { /* egal */ }
+    this.conn = { id: cid, routeId: id, source: r.source, sink: r.sink, at: Date.now() };
     this.state = 'verbunden'; this.lastError = null; this.lastVerify = Date.now();
-    this._save();
+    this._save(); this._changed();
     this.log.info('iconix: AM verbunden ' + r.source + ' -> ' + r.sink + ' (' + r.label + '), mainConnectionID ' + cid + ', amError ' + errOf(res));
   }
 
@@ -288,18 +356,19 @@ class CarRoute {
     if (!hit) {
       this.log.warn('iconix: AM-Verbindung ' + c.id + ' ist weg – verbinde neu');
       this.conn = null; this.connState = null; this.nextTry = 0; this.state = 'verbinde';
-      this._save();
+      this._save(); this._changed();
       return;
     }
     if (hit.state !== this.connState) this.log.info('iconix: AM-Verbindung ' + hit.id + ': ' + hit.state);
     this.connState = hit.state;
+    this._changed();
   }
 
   async _disconnect() {
     const c = this.conn;
     if (!c) return;
     this.conn = null; this.connState = null;
-    this._save();
+    this._save(); this._changed();
     if (c.id != null) {
       try { await this._call(this.am, 'disconnect', { mainConnectionID: c.id }); } catch (e) { this.log.warn('iconix: AM disconnect: ' + e); }
     }
@@ -318,6 +387,8 @@ class CarRoute {
     const out = ['--- Tonweg (Audiomanager) ---', 'Weg: ' + r.label + (r.source != null ? ' · Quelle ' + r.source + ' -> Senke ' + r.sink : '') +
       (r.device ? ' · Kanal ' + r.device.replace(/^smartx:/, '') : '')];
     out.push('Status: ' + this.short() + (this.conn ? ' · ID ' + this.conn.id : ''));
+    out.push('Lautstärkeknopf: ' + (!this.knobOn ? 'regelt den Motorsound (wie im Auto vorgesehen)' : 'regelt die Musik – Motorsound macht beim Drehen Platz') +
+      (this.knobVol !== null ? ' · Senke 1: ' + this.knobVol : '') + (this.knobErr ? ' · ' + this.knobErr : ''));
     out.push('Absenken: ' + (!this.duckOn ? 'aus' : this.ducked ? 'aktiv wegen ' + this.duckBy : 'bereit (Telefon, PDC, Gong – nicht bei Navigation)'));
     if (!(await this._proxies())) { out.push(this.proxyErr); return out; }
     const fmt = (a, idKey) => a.map(function (x) { return x[idKey] + ' ' + (x.name || ''); }).join(', ');
@@ -341,3 +412,5 @@ module.exports = CarRoute;
 module.exports.ROUTES = ROUTES;
 module.exports.DEFAULT_ROUTE = DEFAULT_ROUTE;
 module.exports.DUCK_POLL_MS = DUCK_POLL_MS;
+module.exports.KNOB_REST_MS = KNOB_REST_MS;
+module.exports.AUDIBLE_AFTER_MS = AUDIBLE_AFTER_MS;
