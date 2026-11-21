@@ -1,15 +1,15 @@
 {
   "id": "iconix_sounds",
   "title": "Sound Drive",
-  "description": "Virtueller Motorsound abhängig von Drehzahl und Last: Turbo-Vierzylinder, Supra-Turbo mit Zischen, Fünfzylinder, Boxer, V8 und V10. Ton über die Fahrzeuglautsprecher (Audiomanager + SmartX), startet mit dem Auto. Braucht das Tool Sound Drive Audio.",
-  "version": "1.0.0",
+  "description": "Virtueller Motorsound abhängig von Drehzahl und Last: Turbo-Vierzylinder, Supra-Turbo, Fünfzylinder, Boxer, V8 und V10. Ton über die Fahrzeuglautsprecher (Audiomanager + SmartX), startet mit dem Auto. Braucht das Tool Sound Drive Audio.",
+  "version": "1.0.1",
   "vendor": "custom",
   "loggingId": "ICXS",
   "iconGlyph": "engine",
   "mguHmi": ["ID7", "ID8"],
   "autostart": true,
   "requires": {
-    "iconix-audiod": "1.0.0"
+    "iconix-audiod": "1.0.1"
   },
   "signals": {
     "de.bmw.infotainment.vehicle.CDS": {
@@ -199,19 +199,6 @@
         [75, "75 %"],
         [100, "Profil"],
         [125, "125 %"],
-        [150, "150 %"]
-      ]
-    },
-    {
-      "key": "hiss",
-      "label": "Zischen (Schubumluft)",
-      "type": "choice",
-      "default": 100,
-      "group": "Klang anpassen",
-      "options": [
-        [0, "Aus"],
-        [50, "50 %"],
-        [100, "Profil"],
         [150, "150 %"]
       ]
     },

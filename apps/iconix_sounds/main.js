@@ -25,7 +25,7 @@ const AudioLink = require('./audio_link');
 const VehicleFeed = require('./vehicle_feed');
 const CarRoute = require('./car_route');
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 // Audiomanager-Verbindung: Sie braucht im Auto ~6 s, bis sie hörbar ist (CS_CONNECTED). Darum wird sie schon beim
 // Aufwachen des Autos aufgebaut (erste Fahrzeugdaten) und gehalten, solange der Motor läuft oder kürzlich lief –
 // sonst fehlten bei jedem Motorstart und nach jeder Pause ein paar Sekunden Ton.
@@ -33,7 +33,7 @@ const ROUTE_KEEP_MS = 120000;  // so lange nach dem letzten Lebenszeichen (Ton, 
 const WAKE_GAP_MS = 300000;    // so lange ohne Fahrzeugdaten = das Auto hat geschlafen
 const DEFAULTS = {
   enabled: true, profile: Profiles.DEFAULT, volume: 80, intensity: 70, sport: false,
-  muteParked: false, duck: true, knobMusic: true, followMode: true, wide: true, speedVol: 4, startSound: true, bassDb: 0, bark: 100, hiss: 100, loadSource: 'auto', route: CarRoute.DEFAULT_ROUTE, alsaDevice: 'auto', maxTorque: 400, carIdle: 800, carRedline: 4800
+  muteParked: false, duck: true, knobMusic: true, followMode: true, wide: true, speedVol: 4, startSound: true, bassDb: 0, bark: 100, loadSource: 'auto', route: CarRoute.DEFAULT_ROUTE, alsaDevice: 'auto', maxTorque: 400, carIdle: 800, carRedline: 4800
 };
 
 function setting(settings, key) {
@@ -84,8 +84,7 @@ function startCore(host) {
       speedVol: num(g('speedVol'), 4),
       startSound: bool(g('startSound')),
       bassDb: num(g('bassDb'), 0),
-      barkPct: num(g('bark'), 100) / 100,
-      hissPct: num(g('hiss'), 100) / 100
+      barkPct: num(g('bark'), 100) / 100
     };
     // Gerät für den Dienst: SmartX-Kanal des Tonwegs, bei "ALSA direkt" das frühere Ausgabegerät
     const rt = CarRoute.route(synthCfgCache.route);
@@ -102,7 +101,7 @@ function startCore(host) {
     refresh(); synthCfgCache.duck = ducked; synthCfgCache.hold = held; link.configure(synthCfgCache);
     if (core) { core.route.setDuck(uiCfg.duck); core.route.setKnob(uiCfg.knobMusic); }
   };
-  let lastActivity = 0, lastData = 0;
+  let lastActivity = 0, lastData = 0, pendingTest = 0;
 
   feed.on('sample', s => {
     const now = Date.now();
@@ -134,6 +133,8 @@ function startCore(host) {
     route.want(synthCfgCache.route, bool(setting(settings, 'enabled')) && lastActivity > 0 && now - lastActivity < ROUTE_KEEP_MS);
     // Telefon, Navi-Ansage, Parkpiepser: Motorsound absenken (CarRoute beobachtet den Audiomanager)
     if (route.ducked !== ducked) { ducked = route.ducked; synthCfgCache.duck = ducked; link.configure(synthCfgCache); }
+    // wartender Testsound: starten, sobald der Tonweg hörbar ist (spätestens nach 10 s)
+    if (pendingTest && (route.audible() || now - pendingTest > 10000)) { pendingTest = 0; link.test(); }
   }, 500);
   route.setDuck(uiCfg.duck);
   route.setKnob(uiCfg.knobMusic);
@@ -141,9 +142,7 @@ function startCore(host) {
   log.info('iconix: Kern gestartet, Version ' + VERSION + ', Tonweg ' + synthCfgCache.route);
 
   // Testsound: Tonweg sofort bereitstellen; ist er noch nicht hörbar (verbindet ~6 s), startet der Test, sobald er es ist
-  let pendingTest = 0;
   const test = () => { lastActivity = Date.now(); if (route.audible()) link.test(); else pendingTest = Date.now(); };
-  setInterval(() => { if (pendingTest && (route.audible() || Date.now() - pendingTest > 10000)) { pendingTest = 0; link.test(); } }, 250);
   core = { link, feed, route, pushCfg, synthCfg, test, ui: () => uiCfg, log, last: () => last };
   return core;
 }
@@ -200,13 +199,14 @@ function audioStatus(c) {
 }
 
 // Diagnosezeilen auf die Breite der Seite umbrechen (~64 Zeichen)
-function wrapLines(lines) {
+function wrapLines(lines, width) {
+  const W = width || 64;
   const out = [];
   lines.forEach(l => {
     let s = String(l);
-    while (s.length > 64) {
-      const cut = Math.max(s.lastIndexOf(', ', 64), s.lastIndexOf(' ', 64));
-      const i = cut > 20 ? cut + 1 : 64;
+    while (s.length > W) {
+      const cut = Math.max(s.lastIndexOf(', ', W), s.lastIndexOf(' ', W));
+      const i = cut > 20 ? cut + 1 : W;
       out.push(s.slice(0, i));
       s = '   ' + s.slice(i).replace(/^\s+/, '');
     }
@@ -248,7 +248,8 @@ mgu.run({
     // Audio-Diagnose: zeigt, welche Tonwege es auf diesem Head Unit gibt (an-/ausschalten)
     // Oben der Tonweg (Audiomanager: Verbindungen, Quellen, Senken – kommt asynchron), darunter Dienst und App.
     let diag = null, routeLines = ['--- Tonweg (Audiomanager) ---', '(wird abgefragt ...)'];
-    const diagText = linkLines => wrapLines(routeLines.concat(linkLines));
+    // breite Ansicht: längere Zeilen (die Diagnose-Kachel ist dann ~1100 px breit)
+    const diagText = linkLines => wrapLines(routeLines.concat(linkLines), c.ui().wide ? 100 : 64);
     const openDiag = () => {
       const d = diag = { linkLines: c.link.diagnose(), page: 0 };
       d.lines = diagText(d.linkLines);

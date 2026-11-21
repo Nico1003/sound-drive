@@ -21,7 +21,6 @@
  *   drive       weiche Sättigung
  *   exhaust / bark / vib / vibHz  Innenraum-Mischung: Auspuffanteil, dessen "Bellen" (Ableitung),
  *               Körperschall (tiefpassgefilterte Zündimpulse über Motorlager und Karosserie) und dessen Grenzfrequenz
- *   bov         Schubumluft: Zischen beim Gaswegnehmen nach Ladedruck (0 = keins, 1 = deutlich)
  *   gain        Pegelabgleich zwischen den Profilen (mit kit/tools/iconix_calibrate.js ermittelt)
  *
  * Elektro ("electric"): baseHz, octaveKmh, voices [Verhältnis, Pegel, Verstimmung], sub, cutoff,
@@ -53,22 +52,21 @@
       boomHz: 90, drive: 1.5, rasp: 0.015, pipeFb: 0.24, chamberFb: 0.22, cabinHz: 1800, boomDb: 4.5, midDb: -2.5, exhaust: 0.75, bark: 0.6, vib: 0.55, vibHz: 140, gain: 2.95
     },
     {
-      // Wie der Turbo-Vierzylinder, aber mit Sportauspuff: offener, bellender, höher drehend, leises Zischen beim Gaswegnehmen
+      // Wie der Turbo-Vierzylinder, aber mit Sportauspuff: offener, bellender, höher drehend
       id: 'turbo4s', name: 'Turbo Vier Sport', desc: 'Offener, bellender Sportauspuff', kind: 'combustion',
       layout: I4, displacement: 2.0, idleRpm: 900, maxRpm: 6500, blowdown: 62, flowExp: 0.6,
       headerM: 0.7, headerRatio: 1.05, headerSpread: 0.07,
       pipeM: 3.0, pipeLp: 2600, chamberM: 0.36, mufflerHz: 1500, mufflerQ: 0.8,
-      unev: 0.24, variance: 0.9, bov: 0.45,
+      unev: 0.24, variance: 0.9,
       boomHz: 95, drive: 1.55, rasp: 0.015, pipeFb: 0.25, chamberFb: 0.2, cabinHz: 1900, boomDb: 5, midDb: -2, exhaust: 0.8, bark: 0.65, vib: 0.5, vibHz: 150, gain: 2.7
     },
     {
-      // Reihensechser mit Turbo im Stil des Supra: glatt und rauchig, dreht frei hoch, deutliches Zischen
-      // der Schubumluft beim Gaswegnehmen nach Ladedruck
-      id: 'supra', name: 'Supra Turbo', desc: 'Seidig, rauchig – mit Zischen', kind: 'combustion',
+      // Reihensechser mit Turbo im Stil des Supra: glatt und rauchig, dreht frei hoch
+      id: 'supra', name: 'Supra Turbo', desc: 'Seidig, rauchig, dreht frei hoch', kind: 'combustion',
       layout: I6, displacement: 3.0, idleRpm: 800, maxRpm: 6500, blowdown: 64, flowExp: 0.6,
       headerM: 0.68, headerRatio: 1.04, headerSpread: 0.05,
       pipeM: 2.9, pipeLp: 2500, chamberM: 0.33, mufflerHz: 1600, mufflerQ: 0.85,
-      unev: 0.16, variance: 0.7, bov: 1.0,
+      unev: 0.16, variance: 0.7,
       boomHz: 85, drive: 1.6, rasp: 0.013, pipeFb: 0.25, chamberFb: 0.18, cabinHz: 1950, boomDb: 4.5, midDb: -2, exhaust: 0.85, bark: 0.75, vib: 0.5, vibHz: 140, gain: 5.0
     },
     {
@@ -77,7 +75,7 @@
       layout: I5, displacement: 2.5, idleRpm: 800, maxRpm: 6500, blowdown: 64, flowExp: 0.6,
       headerM: 0.66, headerRatio: 1.12, headerSpread: 0.14,
       pipeM: 2.8, pipeLp: 2400, chamberM: 0.34, mufflerHz: 1400, mufflerQ: 0.85,
-      unev: 0.32, variance: 0.9, bov: 0.5,
+      unev: 0.32, variance: 0.9,
       boomHz: 85, drive: 1.65, rasp: 0.015, pipeFb: 0.26, chamberFb: 0.18, cabinHz: 1850, boomDb: 5, midDb: -2, exhaust: 0.85, bark: 0.75, vib: 0.55, vibHz: 135, gain: 3.2
     },
     {
@@ -86,7 +84,7 @@
       layout: B4, displacement: 2.2, idleRpm: 800, maxRpm: 6200, blowdown: 62, flowExp: 0.55,
       headerM: 0.7, headerRatio: 1.35, headerSpread: 0.15,
       pipeM: 3.0, pipeLp: 2200, chamberM: 0.36, mufflerHz: 1150, mufflerQ: 0.8,
-      unev: 0.36, variance: 0.9, bov: 0.4,
+      unev: 0.36, variance: 0.9,
       boomHz: 75, drive: 1.5, rasp: 0.015, pipeFb: 0.24, chamberFb: 0.24, cabinHz: 1600, boomDb: 5.5, midDb: -2.5, exhaust: 0.75, bark: 0.5, vib: 0.6, vibHz: 120, gain: 3.0
     },
     {

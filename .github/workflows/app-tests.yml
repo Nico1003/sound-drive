@@ -35,6 +35,8 @@ jobs:
       - run: python3 kit/tools/test_alsa_play.py
       - name: Ende-zu-Ende (Dienst + Player als Kindprozess)
         run: ICONIX_PYTHON=python3 node kit/tools/test_engine_e2e.js
+      - name: Dienst als Prozess über den Socket
+        run: ICONIX_PYTHON=python3 node kit/tools/test_daemon.js
       - name: Belastungstest Klang (alle Profile, Fahrmodi, Lautstärken, Fahrsituationen)
         run: node kit/tools/iconix_soak.js
       - name: Knackser-Suche

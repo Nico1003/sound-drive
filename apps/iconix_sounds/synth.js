@@ -47,8 +47,6 @@
   // Vollgas bleibt gleich. Pegel bezogen auf Lautstärke 100 %; Verhältnis 3:1 oberhalb COMP_T (leise bis ~+10 dB).
   // oben im Drehzahlband lauter (wie ein echter Motor im Innenraum): bis +RPM_LIFT bei Höchstdrehzahl, nach dem Kompressor
   var RPM_LIFT = 1.0;
-  // Schubumluft ("Zischen" beim Gaswegnehmen nach Ladedruck) – nur Profile mit bov > 0
-  var HISS_AMT = 0.09;
   // Lautstärke 100 % = früher 150 % (Boost): der Überschuss über 1 geht vor den Kompressor
   var VOL_SCALE = 1.5;
   // Fahrmodus (Fahrerlebnisschalter): wie aggressiv der Sound ist. -1 = Eco (dezent, dumpf), 0 = Comfort,
@@ -159,7 +157,7 @@
     this.cfg = {
       enabled: true, profile: Profiles.DEFAULT,
       volume: 0.6, intensity: 0.7, sport: false, duck: false, mode: null, hold: false,
-      speedVol: 4, startSound: true, bassDb: 0, barkPct: 1, hissPct: 1,
+      speedVol: 4, startSound: true, bassDb: 0, barkPct: 1,
       carIdle: 800, carRedline: 4800
     };
     this.target = { rpm: 800, load: 0, speed: 0, overrun: false };
@@ -193,9 +191,7 @@
     this.fMuff = new Biquad(); this.fCabin = new Biquad(); this.fCabin2 = new Biquad(); this.fBoom = new Biquad();
     this.fGuard = new Biquad(); this.fGuard2 = new Biquad(); this.fDc = new Biquad();
     this.fElec = new Biquad(); this.fElec2 = new Biquad();
-    this.fHiss = new Biquad(); this.fHiss2 = new Biquad(); this.fBass = new Biquad();
-    this.fHiss.set('bp', 2300, 0.8, sr); this.fHiss2.set('lp', 4500, 0.7, sr);
-    this.hissK = Math.exp(-1 / (sr * 0.28)); this.hissA = 1 - Math.exp(-1 / (sr * 0.008));
+    this.fBass = new Biquad();
     this.fGuard.set('lp', 6500, 0.71, sr); // nach dem Innenraum-Tiefpass reicht 2. Ordnung
     this.fDc.set('hp', 24, 0.7, sr);
 
@@ -250,8 +246,7 @@
     this.nz1 = 0; this.nz2 = 0;
     this.cycVar = 0; this.bump = 0; this.vib1 = 0; this.vib2 = 0; this.combS = 0.2;
     this.wob = 0; this.wobT = 0;
-    this.boost = 0; this.hissT = 0; this.hissE = 0; this.hissArm = false;
-    this.fHiss.reset(); this.fHiss2.reset(); this.fBass.reset();
+    this.fBass.reset();
     var fl = [this.fMuff, this.fCabin, this.fCabin2, this.fBoom, this.fGuard, this.fGuard2, this.fDc,
       this.fElec, this.fElec2];
     for (var i = 0; i < fl.length; i++) fl[i].reset();
@@ -280,7 +275,6 @@
     this.cfg.speedVol = clamp(finite(+this.cfg.speedVol, 4), 0, 8);
     this.cfg.bassDb = clamp(finite(+this.cfg.bassDb, 0), -8, 8);
     this.cfg.barkPct = clamp(finite(+this.cfg.barkPct, 1), 0.3, 1.6);
-    this.cfg.hissPct = clamp(finite(+this.cfg.hissPct, 1), 0, 1.6);
     if (this.cfg.bassDb !== this.bassSet && this.profile) this._setBoom();
     if (c.profile && c.profile !== this.cfg.profile && c.profile !== this.pending) this.pending = Profiles.get(c.profile).id;
   };
@@ -408,17 +402,6 @@
     this.idleW = clamp(Math.pow(1 - (x - 0.06) / 0.35, 2), 0, 1) * (x < 0.41 ? 1 : 0);
     // Rohre: Schalldämpfer öffnet etwas mit Last (Klappe)
     this.pipeFb = val(p.pipeFb, 0.3); this.hdrFb = val(p.hdrFb, 0.25); this.chamFb = val(p.chamberFb, 0.3);
-    // Ladedruck: baut sich unter Last mit der Drehzahl auf (~0,5 s), fällt ohne Last langsamer ab
-    if (p.bov) {
-      var bt = effLoad * clamp((x - 0.15) / 0.35, 0, 1);
-      this.boost += (bt - this.boost) * (1 - Math.exp(-CR / (sr * (bt > this.boost ? 0.5 : 0.9))));
-      if (this.target.load > 0.45 && this.boost > 0.3) this.hissArm = true;
-      // Gas weg nach Ladedruck: Schubumluftventil öffnet -> Zischen, Ladedruck weg
-      if (this.hissArm && (this.target.load < 0.15 || this.target.overrun)) {
-        this.hissT = Math.min(1.6, p.bov * (0.4 + 0.6 * this.boost) * inten / 0.7 * c.hissPct);
-        this.hissArm = false; this.boost *= 0.2;
-      }
-    }
     this.fMuff.set('lp', (p.mufflerHz || 1200) * (1 + 0.3 * agg) * open * (0.75 + 0.5 * effLoad * inten + 0.15 * Math.min(x, 1) * (1 - effLoad)) * (0.85 + 0.3 * Math.min(x, 1)), p.mufflerQ || 0.7, sr);
   };
 
@@ -481,7 +464,6 @@
     var bump = this.bump, bumpK = 1 - 1 / (this.sr * 0.08);
     var vib1 = this.vib1, vib2 = this.vib2, kVib = this.kVib, bark = this.bark * this.barkMul, exMix = this.exMixEff || this.exMix, vibMix = this.vibMix;
     var hLp0 = this.hLp0, hLp1 = this.hLp1, pLp = this.pLp, pLp2 = this.pLp2, cLp = this.cLp, radLp = this.radLp, yPrev = this.yPrev;
-    var hissT = this.hissT, hissE = this.hissE, hissK = this.hissK, hissA = this.hissA, fH = this.fHiss, fH2 = this.fHiss2;
 
     for (k = 0; k < n; k++) {
       seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5;
@@ -545,10 +527,6 @@
       s = fG.run(s);
       if (useBass) s = fBass.run(s);
       a = s < 0 ? -s : s; if (a > pre) pre = a;
-      if (hissT > 1e-4 || hissE > 1e-4) {
-        hissE += (hissT - hissE) * hissA; hissT *= hissK;
-        s += fH2.run(fH.run(white)) * hissE * HISS_AMT;
-      }
       amp += ampStep;
       s *= amp;
       if (s !== s) { s = 0; bad = true; } else if (s > 0.8 || s < -0.8) s = softLimit(s);
@@ -561,7 +539,6 @@
     this.vib1 = vib1; this.vib2 = vib2;
     this.hLp0 = hLp0; this.hLp1 = hLp1; this.pLp = pLp; this.pLp2 = pLp2; this.cLp = cLp; this.radLp = radLp; this.yPrev = yPrev;
     this.amp = amp; this.seed = seed;
-    this.hissT = hissT; this.hissE = hissE;
     if (pre > this.prePk) this.prePk = pre;
     if (bad || pLp !== pLp || cLp !== cLp) this._reset();
     return peak;

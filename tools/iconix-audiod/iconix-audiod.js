@@ -31,7 +31,7 @@ const Synth = require('./synth');
 const Profiles = require('./profiles');
 const E = require('./engine');
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 const SOCKETS = process.env.ICONIX_AUDIOD_SOCKET
   ? [process.env.ICONIX_AUDIOD_SOCKET]
   : ['/run/iconix-audiod/audiod.sock', '/tmp/iconix-audiod.sock'];
@@ -97,6 +97,8 @@ function runDaemon() {
     else if (m.op === 'testdevices') { log('Gerätetest'); engine.testDevices(); }
     else if (m.op === 'hello') log('App verbunden: ' + m.id + ' ' + m.version);
     else if (m.op === 'diag') {
+      // ALSA-Geräte erst jetzt prüfen (beim ersten Öffnen der Diagnose); das Ergebnis kommt mit dem nächsten Status
+      if (!engine.scan && !engine.scanning) { engine.scanning = true; engine.scanDevices(function () { engine.scanning = false; broadcast(false); }); }
       let lines;
       try {
         const sx = E.probeSmartx();
@@ -150,8 +152,8 @@ function runDaemon() {
 
   SOCKETS.forEach(listen);
   engine.start();
-  // ALSA-Geräte einmal beim Start prüfen (Python + libasound), Ergebnis steht in Status und Diagnose
-  setTimeout(function () { engine.scanDevices(function () { broadcast(false); }); }, 1500);
+  // Kein ALSA-Scan beim Start: Er öffnet bis zu 80 Geräte (Python + libasound) und bremste das Hochfahren des Head
+  // Units. Gescannt wird erst, wenn ihn jemand braucht: Audio-Diagnose, "Geräte testen" oder Ausgabegerät "Gerät N".
   const st = engine.status();
   log('Version ' + VERSION + ' – ' + (st.players.length ? 'Ausgabe: ' + st.players.join(', ') : st.error));
 

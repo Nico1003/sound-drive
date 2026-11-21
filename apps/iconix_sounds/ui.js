@@ -88,7 +88,7 @@
     if (p.kind === 'electric') return 'Elektro';
     var n = p.layout ? p.layout.length : 0;
     var v = { v8: 'V8', v10: 'V10', boxer: 'Boxer · 4 Zylinder' }[p.id];
-    return (v || (n ? n + ' Zylinder' : '')) + (p.bov || /turbo/.test(p.id) ? ' · Turbo' : '');
+    return (v || (n ? n + ' Zylinder' : '')) + (/turbo/i.test(p.name) ? ' · Turbo' : '');
   }
 
   // Statuszeile auf höchstens zwei Zeilen à n Zeichen umbrechen (an " · ")
@@ -96,7 +96,10 @@
     if (t.length <= n) return [t];
     var parts = t.split(' · '), a = '', i = 0;
     while (i < parts.length && (a ? a + ' · ' + parts[i] : parts[i]).length <= n) { a = a ? a + ' · ' + parts[i] : parts[i]; i++; }
-    if (!a) return [t.slice(0, n), t.length > 2 * n ? t.slice(n, 2 * n - 1) + '…' : t.slice(n)];
+    if (!a) {   // erster Teil zu lang: am letzten Leerzeichen trennen, nicht mitten im Wort
+      var sp = t.lastIndexOf(' ', n), cut = sp > n / 2 ? sp : n, rest = t.slice(cut).replace(/^ /, '');
+      return [t.slice(0, cut), rest.length > n ? rest.slice(0, n - 1) + '…' : rest];
+    }
     var b = parts.slice(i).join(' · ');
     return [a, b.length > n ? b.slice(0, n - 1) + '…' : b];
   }
@@ -208,7 +211,8 @@
     g.line(X0, 76, X0 + 96, 76, 3, C.accent);
     g.text('Seite ' + (page + 1) + '/' + pages, X1, 60, 20, C.dim, 'right', 'light');
     var ls = d.lines.slice(page * DIAG_LINES, page * DIAG_LINES + DIAG_LINES);
-    ls = ls.map(function (l) { return l.length > 62 ? l.slice(0, 61) + '…' : l; });
+    var maxL = s.wide ? 102 : 66;   // passend zum Umbruch in main.js (100 bzw. 64 Zeichen)
+    ls = ls.map(function (l) { return l.length > maxL ? l.slice(0, maxL - 1) + '…' : l; });
     for (var i = 0; i < ls.length; i++) g.text(ls[i], X0, 106 + i * 28, 19, i === 0 && page === 0 ? C.text : C.dim, 'left', 'light');
     var b = hitsDiag();
     tile(g, b[0].x, b[0].y, b[0].w, b[0].h, b[0].r, C.bg2, C.edge);

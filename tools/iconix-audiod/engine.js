@@ -452,6 +452,12 @@ Engine.prototype._resolve = function (d) {
 
 Engine.prototype.setDevice = function (d) {
   const self = this;
+  // "Gerät N" braucht den ALSA-Scan – der läuft nicht mehr beim Start, also hier bei Bedarf
+  if (/^scan\d+$/.test(d || '') && !this.scan) {
+    if (!this.scanning) { this.scanning = true; this.scanDevices(function () { self.scanning = false; self.setDevice(d); }); }
+    this.device = d;
+    return;
+  }
   this.device = d || 'auto';
   const old = this.out;
   this.out = new Output(function () { self._changed(); }, this.log, { device: this._resolve(this.device) });
@@ -537,7 +543,7 @@ Engine.prototype.status = function () {
   return {
     ok: !out.error,
     backend: out.backend || (out.list[0] && !out.error ? out.list[0].name : null),
-    rate: RATE, playing: !!out.child, error: out.error, profile: this.synth.cfg.profile,
+    rate: RATE, playing: !!out.child, error: out.error, profile: this.synth.pending || this.synth.cfg.profile,
     underruns: out.underruns || 0, late: this.late, bufMs: out.child ? out.bufMs || null : null, rt: out.child ? out.rt || null : null, ducked: !!this.synth.cfg.duck, leadMs: out.played != null && out.child ? (this.fbLead || FB_LEAD_MS) : LEAD_MS,
     players: out.list.map(function (b) { return b.name; }),
     device: this.device, resolved: out.opts.device, python: findPython(),
@@ -663,7 +669,8 @@ Engine.prototype._tick = function () {
 Engine.prototype._rebuildSynth = function (rate) {
   const old = this.synth, s = new Synth(rate);
   s.configure(Object.assign({}, old.cfg));
-  s._setProfile(old.cfg.profile); s._reset();
+  // ein angefordertes, noch nicht übernommenes Profil (pending) gilt – sonst spielte nach dem Start das alte weiter
+  s._setProfile(old.pending || old.cfg.profile); s._reset();
   s.target = Object.assign({}, old.target); s.stale = old.stale;
   this.synth = s;
   this.log('Synthese mit ' + rate + ' Hz');

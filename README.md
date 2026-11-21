@@ -35,11 +35,10 @@ beim Gleiten bleibt er dezent im Hintergrund, im Schub blubbert er leise aus.
   Hauptrohr, Schalldämpfer. Dazu kommt Körperschall über Motorlager und Karosserie. Die Karosserie
   dämpft die Höhen – so wie man einen Motor im Auto wirklich hört.
 - **Keine schrillen Töne, keine Knackser, kein Rauschen.** Kein Turbo-Pfeifen, keine Patscher, kein
-  Ansaugrauschen. Einzige Ausnahme mit Absicht: das Zischen der Schubumluft beim Gaswegnehmen (Supra und
-  einige Turbo-Profile). Prüfwerkzeuge im Repository messen das automatisch.
+  Ansaugrauschen, kein Zischen. Prüfwerkzeuge im Repository messen das automatisch.
 - **Oben im Drehzahlband lauter,** wie ein echter Motor – auch bei Teillast.
 - **Folgt dem Fahrmodus:** In Eco Pro dezent und dumpfer, in Comfort normal, in Sport lauter, offener und
-  bellender (mehr Zischen), in Sport+ noch etwas mehr. Der Wechsel geht weich über etwa eine Sekunde.
+  bellender, in Sport+ noch etwas mehr. Der Wechsel geht weich über etwa eine Sekunde.
 - **Lauter bei hohem Tempo:** ab 50 km/h steigt der Sound sanft an, bei 130 km/h um +2, +4 oder +6 dB (einstellbar),
   damit er gegen Wind- und Abrollgeräusche ankommt.
 - **Startsound:** Beim Motorstart dreht der Starter kurz durch, der Motor springt an, dreht hoch und fällt auf
@@ -52,8 +51,8 @@ beim Gleiten bleibt er dezent im Hintergrund, im Schub blubbert er leise aus.
 | Profil | Charakter |
 |---|---|
 | **Turbo Vierzylinder** (Standard) | Kernig und drehfreudig. |
-| **Turbo Vier Sport** | Wie der Vierzylinder, aber mit Sportauspuff: offener und bellender, leises Zischen beim Gaswegnehmen. |
-| **Supra Turbo** | Reihensechser mit Turbo im Supra-Stil: seidig und rauchig, deutliches Zischen der Schubumluft beim Gaswegnehmen nach Ladedruck. |
+| **Turbo Vier Sport** | Wie der Vierzylinder, aber mit Sportauspuff: offener und bellender. |
+| **Supra Turbo** | Reihensechser mit Turbo im Supra-Stil: seidig und rauchig, dreht frei hoch. |
 | **Turbo Fünfzylinder** | Die ungerade Zündfolge gibt das typische Trällern, rau und kehlig. |
 | **Turbo Boxer** | Ungleich lange Krümmer je Seite: das bekannte Grummeln. |
 | **V8 Bariton** | Cross-Plane-V8 mit dem typischen ungleichmäßigen Blubbern. |
@@ -79,8 +78,8 @@ Konstantfahrt, Teillast):
   verhält es sich wie im Auto vorgesehen (der Knopf regelt den Motorsound).
 - **Bei Telefon/Ansagen leiser:** Telefonate, Sprachassistent, Parkpiepser und Warngongs senken den Motorsound um
   etwa 12 dB ab; Navigationsansagen bewusst nicht
-- **Klang anpassen:** Bass (Dröhnen) ±6 dB, Auspuff-Bellen 50–150 % (wie weit Schalldämpfer und Innenraum öffnen)
-  und Zischen 0–150 % – für jedes Profil
+- **Klang anpassen:** Bass (Dröhnen) ±6 dB und Auspuff-Bellen 50–150 % (wie weit Schalldämpfer und Innenraum
+  öffnen) – für jedes Profil
 - **Motor anpassen:** Leerlauf- und Abregeldrehzahl sowie maximales Drehmoment des eigenen Motors – der Sound
   bildet das echte Drehzahlband auf das Profil ab
 - **Experten:** Tonweg, Ausgabegerät und Lastquelle (zum Ausprobieren in anderen Autos)
@@ -127,8 +126,8 @@ Klappt es nicht auf Anhieb: In der Statuszeile sollte „Overlay-Mix: verbunden�
 
 | Komponente | Version |
 |---|---|
-| Sound Drive (App) | 1.0.0 |
-| Sound Drive Audio (Tool) | 1.0.0 |
+| Sound Drive (App) | 1.0.1 |
+| Sound Drive Audio (Tool) | 1.0.1 |
 
 ---
 
@@ -201,6 +200,10 @@ node kit/tools/test_engine_e2e.js
 ```
 
 ```bash
+node kit/tools/test_daemon.js
+```
+
+```bash
 node kit/tools/iconix_soak.js
 ```
 
@@ -210,7 +213,8 @@ Dieselben Prüfungen laufen bei jedem Push als GitHub-Action (`.github/workflows
 Rauschen); `iconix_calibrate.js` misst Pegel und Klangbild je Profil und schreibt Hörproben;
 `iconix_popscan.js` sucht in einer Fahrt mit Schaltvorgängen nach Knacksern; `test_alsa_play.py` prüft den
 Python-Player mit einer simulierten Soundkarte; `test_engine_e2e.js` startet den Dienst mit echtem Player-Prozess und
-misst die Verzögerung; `iconix_soak.js` fährt jedes Profil in jedem Fahrmodus und jeder Lautstärke durch alle
+misst die Verzögerung; `test_daemon.js` startet den ganzen Dienst als Prozess und spricht ihn über seinen Socket an
+(wie die App); `iconix_soak.js` fährt jedes Profil in jedem Fahrmodus und jeder Lautstärke durch alle
 Fahrsituationen (Kaltstart mit Startsound, Schalten, Kickdown, Schub, Telefon, Profil- und Moduswechsel, Stumm,
 Datenlücke, Extremwerte, Abwürgen), auch mit den Klang-Reglern in beiden Extremen, und prüft auf NaN, Übersteuern,
 Knacken und Stille.

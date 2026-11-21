@@ -143,7 +143,8 @@ class CarRoute {
   /** Lautstärke der Haupt-Senke lesen; jede Änderung = Knopf gedreht. Nur solange unser Weg gewünscht ist. */
   async _knobTick() {
     this._changed();
-    if (!this.knobOn || !this.needsAm() || !(this.wanted || this.conn) || this.knobBusy) return;
+    // nur mit bestehender Verbindung oder während der Pause (weiter drehen verlängert sie) – keine Abfragen beim Hochfahren
+    if (!this.knobOn || !this.needsAm() || !(this.conn || this.knobHeld()) || this.knobBusy) return;
     this.knobBusy = true;
     try {
       if (!(await this._proxies())) return;
@@ -281,7 +282,7 @@ class CarRoute {
 
   async _step() {
     const now = Date.now();
-    if (this.duckOn && this.wanted && now - this.lastDuck >= DUCK_POLL_MS) this._pollDuck();
+    if (this.duckOn && this.conn && now - this.lastDuck >= DUCK_POLL_MS) this._pollDuck();
     else if (!this.wanted && this.ducked) { this.ducked = false; this.duckBy = null; }
     if (this.busy) return;
     const target = this.wanted && this.needsAm() && !this.knobHeld() ? this.routeId : null;

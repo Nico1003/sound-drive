@@ -256,10 +256,10 @@ test('keine Knackser: niedrige Drehzahl unter Last, Schaltknicke, Gas weg (Spitz
   }
 });
 
-test('keine Patscher, kein Mechanik-Klicken, kein Turbo- oder Ansaugrauschen (Zischen nur per bov)', () => {
+test('keine Patscher, kein Mechanik-Klicken, kein Turbo- oder Ansaugrauschen, kein Zischen', () => {
   const src = fs.readFileSync(path.join(ROOT, 'tools/iconix-audiod/synth.js'), 'utf8');
-  assert.ok(!/popRate|popHeat|fBov|mechEnv|turboGain|fTurbo|inGain|fHelm/.test(src));
-  assert.ok(Profiles.list.every((p) => p.popRate === undefined && p.turbo === undefined && p.intake === undefined));
+  assert.ok(!/popRate|popHeat|fBov|mechEnv|turboGain|fTurbo|inGain|fHelm|fHiss|hissT|HISS_AMT/.test(src));
+  assert.ok(Profiles.list.every((p) => p.popRate === undefined && p.turbo === undefined && p.intake === undefined && p.bov === undefined));
 });
 
 test('Rauschen nur als Hauch: mindestens 36 dB unter dem Motorton', () => {
@@ -426,14 +426,15 @@ test('Profile: Turbo-Auswahl (Standard Turbo Vierzylinder), kein Sechser/Dezent/
   assert.strictEqual(j.title, 'Sound Drive');
 });
 
-test('Supra: Zischen beim Gaswegnehmen nach Ladedruck, nicht bei Konstantfahrt', () => {
-  const p = Profiles.get('supra');
-  const run = (fn) => { const b = p.bov; const a = drive('supra', 24000, 5, fn).out; p.bov = 0; const c = drive('supra', 24000, 5, fn).out; p.bov = b;
-    let e = 0; for (let i = 24000 * 3; i < 24000 * 3.4; i++) e += (a[i] - c[i]) * (a[i] - c[i]); return Math.sqrt(e / (24000 * 0.4)); };
-  const lift = run((t) => t < 3 ? { rpm: 2000 + 1500 * t / 3, load: 1, speed: 80 } : { rpm: 3500 - 400 * (t - 3), load: 0, overrun: true, speed: 80 });
-  const steady = run(() => ({ rpm: 2500, load: 0.3, speed: 80 }));
-  assert.ok(lift > 0.03, 'Zischen hörbar: ' + lift.toFixed(3));
-  assert.ok(steady < 0.002, 'kein Zischen bei Konstantfahrt: ' + steady.toFixed(4));
+test('Gaswegnehmen nach Vollgas: in keinem Profil ein Zischen (keine Höhen-Spitze nach dem Lastwechsel)', () => {
+  // Anteil über 1,5 kHz direkt nach dem Gaswegnehmen darf nicht höher sein als unter Last davor
+  const hiRms = (x, a, b) => { let y = 0, p = 0, e = 0; const k = Math.exp(-2 * Math.PI * 1500 / 24000);
+    for (let i = a - 2400; i < b; i++) { y = k * (y + x[i] - p); p = x[i]; if (i >= a) e += y * y; } return Math.sqrt(e / (b - a)); };
+  for (const id of Profiles.ids) {
+    const out = drive(id, 24000, 5, (t) => t < 3 ? { rpm: 2000 + 1500 * t / 3, load: 1, speed: 80 } : { rpm: 3500 - 400 * (t - 3), load: 0, overrun: true, speed: 80 }).out;
+    const before = hiRms(out, 24000 * 2.5, 24000 * 3), after = hiRms(out, 24000 * 3.02, 24000 * 3.5);
+    assert.ok(after <= before * 1.05 + 1e-4, id + ': Höhen nach Gas weg ' + after.toFixed(4) + ' vs unter Last ' + before.toFixed(4));
+  }
 });
 
 test('Bei hoher Drehzahl lauter als bei niedriger (gleiche Last)', () => {
@@ -564,8 +565,7 @@ test('Startsound: Motor aus -> an spielt Anlassen, Hochdrehen, Leerlauf; aus = k
   assert.ok(mx < idle * 1.15, 'Motor lief schon: kein Startsound');
 });
 
-test('Klang-Regler: Bass, Bellen und Zischen wirken', () => {
-  const p = { rpm: 2500, load: 0.5, speed: 80 };
+test('Klang-Regler: Bass und Bellen wirken', () => {
   // Bass: Verhältnis 20–140 Hz zu 140–600 Hz (Frequenzanalyse). Der Kompressor hält die Gesamtlautstärke,
   // das Verhältnis Bass/Mitten verschiebt sich – das hört man als mehr oder weniger Bass.
   const lowShare = (cfg) => { const s = new Synth(24000); s.configure(Object.assign({ profile: 'turbo4', volume: 0.5, enabled: true }, cfg)); s._setProfile('turbo4');
@@ -583,20 +583,14 @@ test('Klang-Regler: Bass, Bellen und Zischen wirken', () => {
     return band(250, 1200, 6) / band(40, 250, 4); };
   const m50 = midShare({ barkPct: 0.5 }), m150 = midShare({ barkPct: 1.5 });
   assert.ok(m150 > m50 * 1.6, 'Bellen 50 % ' + m50.toFixed(3) + ' vs 150 % ' + m150.toFixed(3));
-  // Zischen: aus = 0, 150 % > 100 %
-  const hiss = (pct) => { const pr = Profiles.get('supra'); const fn = (t) => t < 3 ? { rpm: 2000 + 1500 * t / 3, load: 1, speed: 80 } : { rpm: 3500 - 400 * (t - 3), load: 0, overrun: true, speed: 80 };
-    const runIt = (bov) => { const b = pr.bov; pr.bov = bov; const s = new Synth(24000); s.configure({ profile: 'supra', volume: 1, intensity: 0.7, enabled: true, hissPct: pct }); s._setProfile('supra');
-      const f = new Float32Array(480), out = []; for (let k = 0; k < 500; k++) { s.setParams(fn(k / 100)); s.render(f, 240); for (let i = 0; i < 480; i += 2) out.push(f[i]); } pr.bov = b; return out; };
-    const a = runIt(pr.bov), c = runIt(0); let e = 0; for (let i = 72000; i < 81600; i++) e += (a[i] - c[i]) ** 2; return Math.sqrt(e / 9600); };
-  const h0 = hiss(0), h1 = hiss(1), h15 = hiss(1.5);
-  assert.ok(h0 < 1e-6 && h15 > h1 * 1.2, 'Zischen aus ' + h0.toFixed(4) + ', 100 % ' + h1.toFixed(3) + ', 150 % ' + h15.toFixed(3));
 });
 
 test('Einstellungen der neuen Funktionen vorhanden', () => {
   const j = JSON.parse(fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/app.json'), 'utf8'));
   const by = Object.fromEntries(j.settings.map((x) => [x.key, x]));
   assert.strictEqual(by.speedVol.default, 4); assert.strictEqual(by.startSound.default, true);
-  ['bassDb', 'bark', 'hiss'].forEach((k) => assert.strictEqual(by[k].group, 'Klang anpassen'));
+  ['bassDb', 'bark'].forEach((k) => assert.strictEqual(by[k].group, 'Klang anpassen'));
+  assert.ok(!by.hiss, 'kein Zischen-Regler mehr');
 });
 
 test('Lautstärkeknopf: Drehen gibt den Knopf der Musik (Motorsound stumm, Verbindung frei), nach Ruhe zurück', async () => {
@@ -695,6 +689,17 @@ test('Oberfläche im Auto (Kit führt den Bildschirm): kein doppelter Titel, bre
   assert.strictEqual(by.knobMusic.default, true);
   const src = fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/main.js'), 'utf8');
   assert.ok(/hideButton\('BTN_PROFILE'\)/.test(src), 'untere Leiste ohne "Sound wechseln"');
+});
+
+test('Dienst: Profilwechsel kurz vor dem Start des Players geht nicht verloren (24-kHz-Umbau)', () => {
+  const eng = new E.Engine({ log() {} });
+  eng.configure({ profile: 'turbo4', volume: 0.5, enabled: true });
+  eng.synth._setProfile('turbo4'); eng.synth.pending = null;
+  eng.configure({ profile: 'v10' });                 // App schickt die Einstellungen ...
+  assert.strictEqual(eng.synth.pending, 'v10');
+  eng._rebuildSynth(24000);                          // ... dann startet der Player (24-kHz-Kanal)
+  assert.strictEqual(eng.synth.cfg.profile, 'v10');
+  assert.strictEqual(eng.status().profile, 'v10');
 });
 
 (async () => {

@@ -102,6 +102,16 @@ class VehicleFeed extends EventEmitter {
         this.v.torque = raw * 0.5 - 1023.5; this.v.torqueAt = Date.now();
       }
     });
+    this.startAt = Date.now();
+    // Gaspedal nur bei Bedarf abonnieren (siehe _pedalNeeded): jedes Abo kostet beim Hochfahren des Head Units Zeit,
+    // und mit Motormoment (FES) wird das Pedal nicht gebraucht
+    if (this.getCfg().loadSource === 'pedal') this._watchPedal();
+  }
+
+  _watchPedal() {
+    if (this.pedalOn) return;
+    this.pedalOn = true;
+    this.log.info('iconix: Gaspedal wird als Lastquelle abonniert');
     this._watch(IF.PEDAL, {
       AngleAcceleratorPedal: v => {
         const raw = pick(v, 'actualValueAngleAcceleratorPedal');
@@ -147,6 +157,8 @@ class VehicleFeed extends EventEmitter {
     const now = Date.now();
     const rpm = this.v.rpm;
     let load = 0, overrun = false, src = cfg.loadSource;
+    // Pedal erst abonnieren, wenn es gebraucht wird: Motor läuft, aber kein Motormoment kommt (Auto ohne FES-Moment)
+    if (!this.pedalOn && (src === 'pedal' || (src === 'auto' && rpm > 300 && !this.fresh('torque') && now - (this.startAt || now) > 5000))) this._watchPedal();
 
     if (src === 'auto') src = this.fresh('torque') ? 'torque' : (this.fresh('pedal') ? 'pedal' : 'rpm');
     // Drehzahlanstieg der letzten ~250 ms (U/min pro s) – für alle Lastquellen

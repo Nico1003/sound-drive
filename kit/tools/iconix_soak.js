@@ -5,9 +5,9 @@
  *   node kit/tools/iconix_soak.js [--quick]
  *
  * Für jedes Profil × Fahrmodus (ohne, Eco, Comfort, Sport, Sport+) × Lautstärke (0, 30, 80, 100 %) × Klang (Standard,
- * maximal, minimal: Bass, Bellen, Zischen, Tempo-Lautstärke, Startsound) fährt der
+ * maximal, minimal: Bass, Bellen, Tempo-Lautstärke, Startsound) fährt der
  * Synth eine lange, gemischte Fahrt: Kaltstart aus 0 U/min, Leerlauf, Anfahren mit Hochschalten, Kickdown,
- * Gaswegnehmen bei hoher Drehzahl (Zischen), Schub, Runterschalten mit Zwischengas, Konstantfahrt, Stopp,
+ * Gaswegnehmen bei hoher Drehzahl, Schub, Runterschalten mit Zwischengas, Konstantfahrt, Stopp,
  * Abwürgen (0 U/min), Datenlücke, Profilwechsel und Fahrmodus-Wechsel mitten im Ton, Stumm/Ton an,
  * Absenken (Telefon) an/aus, Extremwerte (Drehzahl über der Abregelung, Last > 1, negative Werte).
  *
@@ -23,11 +23,11 @@ const SR = 24000, BLK = 240;              // 10-ms-Blöcke wie der Dienst
 const quick = process.argv.indexOf('--quick') >= 0;
 const MODES = quick ? [null, 'sport'] : [null, 'eco', 'comfort', 'sport', 'sportplus'];
 const VOLS = quick ? [0, 1] : [0, 0.3, 0.8, 1];
-// Klang-Einstellungen: Standard und beide Extreme (Bass, Bellen, Zischen, Tempo-Lautstärke, Startsound)
+// Klang-Einstellungen: Standard und beide Extreme (Bass, Bellen, Tempo-Lautstärke, Startsound)
 const TONES = [
   ['Standard', {}],
-  ['Klang maximal', { bassDb: 6, barkPct: 1.5, hissPct: 1.5, speedVol: 6 }],
-  ['Klang minimal', { bassDb: -6, barkPct: 0.5, hissPct: 0, speedVol: 0, startSound: false }]
+  ['Klang maximal', { bassDb: 6, barkPct: 1.5, speedVol: 6 }],
+  ['Klang minimal', { bassDb: -6, barkPct: 0.5, speedVol: 0, startSound: false }]
 ].slice(0, quick ? 2 : 3);
 
 // Fahrt als Abschnitte: [Dauer s, Funktion(t im Abschnitt) -> params, Aktion beim Start, Name, Prüfung]
