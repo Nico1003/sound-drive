@@ -182,8 +182,10 @@ class VehicleFeed extends EventEmitter {
     // Runterschalten: Das Getriebe gibt Zwischengas, die Drehzahl springt hoch, das Moment bleibt aber klein oder
     // negativ (Schub). Ohne Ausgleich klang das wie Schub. Schneller Drehzahlanstieg = Gasstoß -> Last und kein Schub.
     if (slope > 900 && rpm > cfg.carIdle + 200) {
+      // laufender Gasstoß: den stärkeren Wert halten; ein abgelaufener zählt nicht mehr (vor dem Verlängern prüfen)
+      const prev = this.blipUntil > now ? this.blip || 0 : 0;
       this.blipUntil = now + 250;
-      this.blip = Math.max(this.blipUntil > now ? this.blip || 0 : 0, clamp((slope - 900) / 2500, 0.25, 0.75));
+      this.blip = Math.max(prev, clamp((slope - 900) / 2500, 0.25, 0.75));
     }
     if (this.blipUntil > now) { load = Math.max(load, this.blip); overrun = false; } else this.blip = 0;
     // leicht glätten, damit Lastsprünge nicht knacken (steigend schneller als fallend)

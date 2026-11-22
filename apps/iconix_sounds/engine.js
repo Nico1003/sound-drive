@@ -436,6 +436,8 @@ function Engine(opts) {
 
 Engine.prototype.configure = function (cfg) {
   this.synth.configure(cfg);
+  // Testsound hat "Stumm" kurz aufgehoben, und jetzt schaltet jemand den Ton an: nach dem Test nicht wieder stumm
+  if (this._testUnmuted && this.synth.cfg.enabled) this._testUnmuted = false;
   if (cfg && cfg.device && cfg.device !== this.device && !this.devTest) this.setDevice(cfg.device);
   this._changed();
 };
@@ -640,7 +642,9 @@ Engine.prototype._tick = function () {
       this.fbUnder = out.underruns; this.fbCalm = now;
       if (this.fbLead < FB_LEAD_MAX) { this.fbLead = Math.min(FB_LEAD_MAX, this.fbLead + 30); this.log('Aussetzer – Vorlauf jetzt ' + this.fbLead + ' ms'); }
     } else if (now - this.fbCalm > 10000 && this.fbLead > FB_LEAD_MS) { this.fbLead = Math.max(FB_LEAD_MS, this.fbLead - 10); this.fbCalm = now; }
-    const queued = this.written / step - out.played;
+    // nie negativ: meldet der Player mehr, als wir geschrieben haben (Rundung, alter Player), schriebe der Dienst
+    // sonst dauerhaft über den Vorlauf hinaus vor – mehr Verzögerung
+    const queued = Math.max(0, this.written / step - out.played);
     due = Math.floor((this.fbLead / 1000 * RATE / step - queued)) * step;
   } else {
     due = Math.floor((now - this.t0 + LEAD_MS) / 1000 * RATE) - this.written;

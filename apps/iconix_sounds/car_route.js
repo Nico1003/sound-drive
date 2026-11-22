@@ -53,6 +53,9 @@ const DUCK_POLL_MS = 1500;
 // bei der Haupt-Senke (1). Ändert sie sich, tritt der Motorsound zur Seite (stumm, Verbindung frei), der Knopf gehört
 // wieder der Musik; nach KNOB_REST_MS ohne Drehen kommt der Sound zurück.
 const KNOB_POLL_MS = 400, KNOB_REST_MS = 1500;
+// Beim Verbinden/Trennen unseres Kanals stellt das Auto die Lautstärke der Haupt-Senke selbst um (eine Durchsage ist
+// nie leiser als die Musik). Das ist kein Knopf: nach jedem eigenen Wechsel so lange nur den neuen Wert merken.
+const KNOB_SETTLE_MS = 2500;
 // Eine Verbindung gilt als hörbar, sobald sie CS_CONNECTED meldet (im Auto ~6 s nach connect) – spätestens nach 8 s.
 const AUDIBLE_AFTER_MS = 8000;
 const CS = ['CS_UNKNOWN', 'CS_CONNECTING', 'CS_CONNECTED', 'CS_DISCONNECTING', 'CS_DISCONNECTED', 'CS_SUSPENDED'];
@@ -105,6 +108,7 @@ class CarRoute {
     this.srcNames = {}; this.srcAt = 0;
     this.knobOn = true;         // Einstellung "Lautstärkeknopf regelt die Musik"
     this.knobVol = null; this.knobAt = 0; this.knobBusy = false; this.knobTimer = null; this.knobErr = null;
+    this.knobSig = null; this.knobQuiet = 0; this.knobIgnored = 0;
     this.onChange = null;       // fn(): hörbar/gehalten hat sich geändert (die App schaltet den Ton weich)
     this.lastAudible = null;
   }
@@ -152,8 +156,20 @@ class CarRoute {
       const s1 = sinks.filter((x) => x.sinkID === SINK_MAIN)[0];
       const v = s1 ? Number(s1.volume) : NaN;
       this.knobErr = s1 ? null : 'Haupt-Senke 1 fehlt';
+      // eigener Verbindungswechsel (verbunden, Zustand, getrennt)? dann eine Weile nur beobachten
+      const now = Date.now(), sig = this.conn ? this.conn.id + ':' + this.connState : '-';
+      if (sig !== this.knobSig) { this.knobSig = sig; this.knobQuiet = now + KNOB_SETTLE_MS; }
+      // Als Knopfdreh zählt eine Änderung
+      //  - während der Pause immer (weiter gedreht verlängert sie; auch während der Beruhigung nach unserem Trennen –
+      //    sonst käme der Sound 1,5 s nach dem ersten Dreh zurück, obwohl noch gedreht wird), und
+      //  - sonst bei hörbarer Verbindung nach der Beruhigung (hörbar = CS_CONNECTED oder ohne Zustandsmeldung nach
+      //    AUDIBLE_AFTER_MS – sonst wäre der Knopf bei einem Auto ohne Zustand wieder beim Motorsound).
+      // Der Sprung des Autos beim Trennen kann die Pause einmal verlängern, aber keine Schleife auslösen: Nach dem
+      // Wiederverbinden zählt erst nach der Beruhigung wieder etwas.
+      const counts = this.knobHeld() || (now >= this.knobQuiet && this.audible());
       if (isFinite(v)) {
-        if (this.knobVol !== null && v !== this.knobVol) {
+        if (!counts && this.knobVol !== null && v !== this.knobVol) this.knobIgnored++;
+        if (counts && this.knobVol !== null && v !== this.knobVol) {
           const was = this.knobHeld();
           this.knobAt = Date.now();
           if (!was) {
@@ -389,7 +405,7 @@ class CarRoute {
       (r.device ? ' · Kanal ' + r.device.replace(/^smartx:/, '') : '')];
     out.push('Status: ' + this.short() + (this.conn ? ' · ID ' + this.conn.id : ''));
     out.push('Lautstärkeknopf: ' + (!this.knobOn ? 'regelt den Motorsound (wie im Auto vorgesehen)' : 'regelt die Musik – Motorsound macht beim Drehen Platz') +
-      (this.knobVol !== null ? ' · Senke 1: ' + this.knobVol : '') + (this.knobErr ? ' · ' + this.knobErr : ''));
+      (this.knobVol !== null ? ' · Senke 1: ' + this.knobVol : '') + (this.knobIgnored ? ' · ' + this.knobIgnored + ' Änderungen durchs Auto ignoriert' : '') + (this.knobErr ? ' · ' + this.knobErr : ''));
     out.push('Absenken: ' + (!this.duckOn ? 'aus' : this.ducked ? 'aktiv wegen ' + this.duckBy : 'bereit (Telefon, PDC, Gong – nicht bei Navigation)'));
     if (!(await this._proxies())) { out.push(this.proxyErr); return out; }
     const fmt = (a, idKey) => a.map(function (x) { return x[idKey] + ' ' + (x.name || ''); }).join(', ');
@@ -414,4 +430,5 @@ module.exports.ROUTES = ROUTES;
 module.exports.DEFAULT_ROUTE = DEFAULT_ROUTE;
 module.exports.DUCK_POLL_MS = DUCK_POLL_MS;
 module.exports.KNOB_REST_MS = KNOB_REST_MS;
+module.exports.KNOB_SETTLE_MS = KNOB_SETTLE_MS;
 module.exports.AUDIBLE_AFTER_MS = AUDIBLE_AFTER_MS;

@@ -150,6 +150,12 @@ def main():
     ok = rc == 0 and zeros_inside > 0 and 'underrun' in err and len(data) == len(payload) + pre * 2 + zeros_inside
     print(('ok  ' if ok else 'FAIL') + ' stockender Dienst: Stille nachgelegt (%d ms), als underrun gemeldet' % (zeros_inside // 2 * 1000 // RATE))
     fails += not ok
+    # Rückmeldung zählt nur Frames des Dienstes: nachgelegte Stille darf nicht als gespielt gelten (sonst schreibt der
+    # Dienst danach zu viel vor und die Verzögerung wächst mit jedem Stocken)
+    vals = [int(l[2:]) for l in rep.split('\n') if l.startswith('P ')]
+    ok = bool(vals) and max(vals) <= frames
+    print(('ok  ' if ok else 'FAIL') + ' Rückmeldung ohne nachgelegte Stille (höchstens %d, gemeldet %d)' % (frames, max(vals or [0])))
+    fails += not ok
     # zwei getrennte Hänger -> genau zwei Meldungen (je Stocken eine), Daten trotzdem vollständig
     rc, pcm, rep, err = run(payload, stall_reads=set(range(4, 9)) | set(range(14, 19)))
     n = err.count('underrun')

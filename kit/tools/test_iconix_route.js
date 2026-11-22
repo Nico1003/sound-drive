@@ -34,9 +34,10 @@ function fakeAm(opts) {
         if (opts.refuse) return { amError: 'E_NOT_POSSIBLE', mainConnectionID: null };
         const id = am.nextId++;
         am.conns.push({ mainConnectionID: id, sourceID: params.sourceID, sinkID: params.sinkID, connectionState: am.state != null ? am.state : 2 });
+        if (opts.volJump) am.vol += opts.volJump;     // das Auto hebt die Lautstärke für die "Durchsage" an
         return { amError: 'E_OK', mainConnectionID: id };
       }
-      if (method === 'disconnect') { am.conns = am.conns.filter((c) => c.mainConnectionID !== params.mainConnectionID); return { amError: 'E_OK' }; }
+      if (method === 'disconnect') { am.conns = am.conns.filter((c) => c.mainConnectionID !== params.mainConnectionID); if (opts.volJump) am.vol -= opts.volJump; return { amError: 'E_OK' }; }
       throw new Error('unbekannt ' + method);
     }
   };
@@ -414,9 +415,9 @@ test('Einstellungen: Telefon/Ansagen-Option, Experten- und Motor-Gruppe, Gerät 
   assert.ok(!by.dialVolume);
 });
 
-test('Profile: Turbo-Auswahl (Standard Turbo Vierzylinder), kein Sechser/Dezent/Elektro mehr', () => {
+test('Profile: Turbo-Auswahl (Standard Street Four), kein Sechser/Dezent/Elektro mehr', () => {
   assert.strictEqual(Profiles.DEFAULT, 'turbo4');
-  assert.deepStrictEqual(Profiles.ids, ['turbo4', 'turbo4s', 'supra', 'turbo5', 'boxer', 'v8', 'v10']);
+  assert.deepStrictEqual(Profiles.ids, ['turbo4', 'diesel4', 'turbo4s', 'supra', 'turbo5', 'boxer', 'v8', 'v10']);
   assert.strictEqual(Profiles.get('subtle').id, 'turbo4', 'alte gespeicherte Auswahl fällt auf den Standard zurück');
   assert.ok(Profiles.list.every((p) => p.kind === 'combustion' && p.desc));
   const j = JSON.parse(fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/app.json'), 'utf8'));
@@ -456,13 +457,58 @@ test('Oberfläche: alles Bedienbare links von x = 1140 (geteilte Ansicht verdeck
   all.forEach((h) => assert.ok(h.x + h.w <= 1140, h.key + ' reicht bis ' + (h.x + h.w)));
 });
 
-test('Oberfläche: Profil-Knöpfe zwei je Reihe und groß genug für die Fahrt', () => {
+test('Oberfläche: Profil-Knöpfe zwei je Reihe, groß, bis unten; Lautstärke senkrecht rechts', () => {
   const UI = require(path.join(ROOT, 'apps/iconix_sounds/ui.js'));
-  const chips = UI.hits(Profiles.list).filter((h) => h.act === 'profile');
+  const all = UI.hits(Profiles.list, true), chips = all.filter((h) => h.act === 'profile');
   assert.strictEqual(new Set(chips.slice(0, 2).map((c) => c.y)).size, 1, 'erste Reihe: zwei Knöpfe');
   assert.ok(chips[2].y > chips[0].y, 'dritter Knopf in der nächsten Reihe');
-  chips.forEach((c) => assert.ok(c.w >= 300 && c.h >= 60, c.key + ' ' + c.w + 'x' + c.h));
-  UI.hits(Profiles.list).filter((h) => h.act === 'vol').forEach((h) => assert.ok(h.w >= 60 && h.h >= 60));
+  chips.forEach((c) => assert.ok(c.w >= 400 && c.h >= 85, c.key + ' ' + c.w + 'x' + c.h));
+  const last = chips[chips.length - 1];
+  assert.ok(last.y + last.h >= 500 && last.y + last.h <= 516, 'unterste Reihe reicht bis unten: ' + (last.y + last.h));
+  const vp = all.find((h) => h.key === 'vol+'), vm = all.find((h) => h.key === 'vol-');
+  assert.ok(vp.x > chips[1].x + chips[1].w && vm.x === vp.x && vp.y < vm.y, 'Lautstärke als Leiste rechts: + oben, − unten');
+  [vp, vm].forEach((h) => assert.ok(h.w >= 60 && h.h >= 60));
+  // schmale Ansicht: alles noch bedienbar groß
+  UI.hits(Profiles.list, false).forEach((h) => assert.ok(h.w >= 90 && h.h >= 60 && h.x + h.w <= 1140, h.key));
+  assert.strictEqual(chips.length, 8, 'acht Sounds = vier volle Reihen');
+});
+
+test('Lautstärke-Regler: antippen und ziehen', () => {
+  const UI = require(path.join(ROOT, 'apps/iconix_sounds/ui.js'));
+  for (const wide of [true, false]) {
+    const all = UI.hits(Profiles.list, wide), vp = all.find((h) => h.key === 'vol+'), vm = all.find((h) => h.key === 'vol-');
+    const cx = vp.x + vp.w / 2, top = vp.y + vp.h + 10, bot = vm.y - 10;
+    const hi = UI.volAt(cx, top, wide), lo = UI.volAt(cx, bot, wide), mid = UI.volAt(cx, (top + bot) / 2, wide);
+    assert.ok(hi > 0.9 && lo < 0.1 && mid > 0.3 && mid < 0.7, 'oben laut, unten leise: ' + [hi, mid, lo].map((v) => v.toFixed(2)));
+    assert.strictEqual(UI.volAt(cx, vp.y + 5, wide), -1, '[+] gehört nicht zum Regler');
+    assert.strictEqual(UI.volAt(vp.x - 60, top + 40, wide), -1, 'neben dem Regler: nichts');
+    assert.strictEqual(UI.volAt(cx, 0, wide, true), 1, 'beim Ziehen über den Rand: begrenzt');
+    assert.strictEqual(UI.volAt(cx, 999, wide, true), 0);
+    // keine Überschneidung mit den Knöpfen
+    assert.ok(!UI.hitAt(Profiles.list, cx, (top + bot) / 2, false, wide), 'Regler-Mitte ist kein Knopf');
+  }
+  const src = fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/main.js'), 'utf8');
+  assert.ok(/ctx\.onTouch\(/.test(src) && /UI\.volAt\(/.test(src), 'Ziehen über ctx.onTouch');
+  assert.ok(/Math\.round\(f \* 20\) \* 5/.test(src), 'rastet in 5-%-Schritten (Auswahl in den Einstellungen)');
+});
+
+test('Power Four (220d): wie Street Four, aber kräftiger und ohne Traktor-Brummen', () => {
+  const d = Profiles.get('diesel4'), t = Profiles.get('turbo4');
+  assert.strictEqual(d.id, 'diesel4');
+  assert.deepStrictEqual(d.layout, t.layout, 'Vierzylinder-Zündfolge');
+  assert.ok(d.unev < t.unev && d.variance < t.variance && d.idleRip < 1, 'weniger Brummen und Rütteln');
+  assert.ok(d.boomDb > t.boomDb && d.displacement > t.displacement, 'mehr Bass und Fülle');
+  const vr = (p) => { const s = new Synth(24000); s.configure({ profile: p, carIdle: 800, carRedline: 4800 }); s._setProfile(p); return s._virtualRpm(2000); };
+  assert.ok(vr('diesel4') > vr('turbo4'), 'höhere Tonlage im Diesel-Fahrbereich');
+  // Konstantfahrt 1900 U/min: mindestens so laut wie Street Four
+  const lvl = (p) => { const s = new Synth(24000); s.configure({ profile: p, volume: 0.8, enabled: true }); s._setProfile(p);
+    const f = new Float32Array(4800); let sum = 0, n = 0;
+    for (let k = 0; k < 60; k++) { s.setParams({ rpm: 1900, load: 0.3, speed: 90 }); s.render(f, 2400); if (k > 30) for (let i = 0; i < 4800; i += 2) { sum += f[i] * f[i]; n++; } }
+    return Math.sqrt(sum / n); };
+  const ld = lvl('diesel4'), lt = lvl('turbo4');
+  assert.ok(ld >= lt * 0.95, 'Konstantfahrt ' + ld.toFixed(3) + ' vs ' + lt.toFixed(3));
+  const app = JSON.parse(fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/app.json'), 'utf8'));
+  assert.ok(app.settings.find((x) => x.key === 'profile').options.some((o) => o[0] === 'diesel4'), 'in den Einstellungen wählbar');
 });
 
 test('Lautstärke: 100 % klingt wie früher 150 %', () => {
@@ -602,7 +648,8 @@ test('Lautstärkeknopf: Drehen gibt den Knopf der Musik (Motorsound stumm, Verbi
   await r._step();
   assert.strictEqual(r.state, 'verbunden');
   assert.ok(r.audible(), 'verbunden + CS_CONNECTED = hörbar');
-  await r._knobTick();                       // Ausgangswert lesen
+  await r._knobTick();                       // Ausgangswert lesen (nach eigenem Verbinden: kurze Ruhezeit)
+  r.knobQuiet = 0;                           // Ruhezeit vorbei
   am.vol = 23;                               // Knopf gedreht
   await r._knobTick();
   assert.ok(r.knobHeld(), 'Knopf gedreht erkannt');
@@ -619,7 +666,7 @@ test('Lautstärkeknopf: Drehen gibt den Knopf der Musik (Motorsound stumm, Verbi
   assert.strictEqual(am.conns.length, 1, 'nach Ruhe wieder verbunden');
   assert.ok(r.audible());
   // Einstellung aus: Drehen ändert nichts (Knopf regelt dann den Motorsound, wie im Auto vorgesehen)
-  r.setKnob(false); am.vol = 30; await r._knobTick(); await r._step();
+  r.setKnob(false); r.knobQuiet = 0; am.vol = 30; await r._knobTick(); await r._step();
   assert.ok(!r.knobHeld() && am.conns.length === 1);
 });
 
@@ -685,10 +732,20 @@ test('Oberfläche im Auto (Kit führt den Bildschirm): kein doppelter Titel, bre
   assert.ok(!texts.includes('Sound Drive'), 'Titel steht schon im Kopf des Kits');
   const j = JSON.parse(fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/app.json'), 'utf8'));
   const by = Object.fromEntries(j.settings.map((x) => [x.key, x]));
-  assert.strictEqual(by.wide.default, true);
+  assert.strictEqual(by.narrow.default, false, 'breite Ansicht ist Standard (neuer Schlüssel, alter gespeicherter Wert greift nicht)');
+  assert.ok(!by.wide);
   assert.strictEqual(by.knobMusic.default, true);
   const src = fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/main.js'), 'utf8');
   assert.ok(/hideButton\('BTN_PROFILE'\)/.test(src), 'untere Leiste ohne "Sound wechseln"');
+  assert.ok(/cv\.clear\(UI\.colors\.bg\)/.test(src), 'ganze Fläche gefüllt (kein grauer Streifen)');
+  assert.ok(/cv\.tabInfo = TAB_INFO/.test(src) && /tabs: \['Sound'\]/.test(src), 'eigener Reiter: zurück aus den Einstellungen');
+  // im Auto verdeckt der Kopf des Kits die oberen 38 px der Seite: dort darf nichts stehen
+  const tops = [];
+  const g2 = { rect() {}, rrect(x, y) { if (y > 0) tops.push(y); }, line(x1, y1, x2, y2) { tops.push(Math.min(y1, y2)); },
+    arc(cx, cy, r) { tops.push(cy - r - 10); }, text(t, x, y, size) { tops.push(y - size); } };
+  for (const diag of [null, { lines: ['a', 'b'], page: 0 }]) UI.draw(g2, { profiles: Profiles.list, profile: 'turbo4', rpm: 900, speed: 0, volume: 0.8,
+    enabled: true, own: true, wide: true, sport: true, demo: true, mode: 'sport', diag, audio: { ok: true, text: 'x' } });
+  assert.ok(Math.min(...tops) >= 44, 'oberste Kante ' + Math.min(...tops) + ' (muss unter 38 + Rand liegen)');
 });
 
 test('Dienst: Profilwechsel kurz vor dem Start des Players geht nicht verloren (24-kHz-Umbau)', () => {
@@ -700,6 +757,104 @@ test('Dienst: Profilwechsel kurz vor dem Start des Players geht nicht verloren (
   eng._rebuildSynth(24000);                          // ... dann startet der Player (24-kHz-Kanal)
   assert.strictEqual(eng.synth.cfg.profile, 'v10');
   assert.strictEqual(eng.status().profile, 'v10');
+});
+
+test('Lautstärkeknopf: Lautstärke-Sprung des Autos beim Verbinden/Trennen ist kein Knopf (keine Schleife)', async () => {
+  const { am, signals } = fakeAm({ volJump: 5 });
+  const r = new CarRoute(signals, quiet, null);
+  const expire = () => { r.knobQuiet = 0; };
+  r.want('overlay', true);
+  await r._step();                                    // verbinden -> Auto hebt Senke 1 an
+  await r._knobTick(); expire(); await r._knobTick();
+  assert.ok(!r.knobHeld() && am.conns.length === 1, 'eigenes Verbinden löst keine Pause aus');
+  am.vol += 2; await r._knobTick();                   // echter Knopfdreh
+  assert.ok(r.knobHeld(), 'echter Dreh erkannt');
+  await r._step();                                    // trennen -> Auto senkt Senke 1
+  assert.strictEqual(am.conns.length, 0);
+  await r._knobTick();                                // Sprung durchs Trennen: verlängert höchstens die Pause
+  r.knobAt = Date.now() - 2000;
+  await r._step();                                    // wieder verbinden -> Auto hebt an
+  assert.strictEqual(am.conns.length, 1, 'nach Ruhe wieder verbunden');
+  for (let i = 0; i < 4; i++) { await r._knobTick(); expire(); }
+  await r._step();
+  assert.ok(!r.knobHeld() && am.conns.length === 1 && r.audible(), 'bleibt verbunden – keine Schleife');
+  assert.ok(r.knobIgnored >= 1, 'Sprünge des Autos gezählt (' + r.knobIgnored + ')');
+});
+
+test('Synth: schnell zurück zum laufenden Profil – der angefangene Wechsel wird verworfen', () => {
+  const s = new Synth(24000); s.configure({ profile: 'turbo4', enabled: true }); s._setProfile('turbo4');
+  s.configure({ profile: 'v10' });
+  assert.strictEqual(s.pending, 'v10');
+  s.configure({ profile: 'turbo4' });                 // noch vor dem Ausblenden zurück
+  assert.strictEqual(s.pending, null);
+  const f = new Float32Array(4800);
+  for (let k = 0; k < 20; k++) { s.setParams({ rpm: 2000, load: 0.3, speed: 50 }); s.render(f, 2400); }
+  assert.strictEqual(s.cfg.profile, 'turbo4', 'es bleibt der gewählte Sound');
+});
+
+test('Dienst: Ton während des Testsounds eingeschaltet bleibt danach an', () => {
+  const eng = new E.Engine({ log() {} });
+  eng.configure({ profile: 'turbo4', enabled: false });
+  eng.test();
+  eng._tick();                                        // Test hebt "Stumm" auf
+  assert.ok(eng.synth.cfg.enabled && eng._testUnmuted);
+  eng.configure({ enabled: true });                   // Nutzer schaltet den Ton an
+  eng.testUntil = 0; eng._tick();                     // Test vorbei
+  assert.ok(eng.synth.cfg.enabled, 'nicht wieder stumm');
+  // ohne Einschalten: nach dem Test wieder stumm wie vorher
+  eng.configure({ enabled: false }); eng.test(); eng._tick(); eng.testUntil = 0; eng._tick();
+  assert.ok(!eng.synth.cfg.enabled);
+  eng.stop();
+});
+
+test('App: Tool älter als die App wird angezeigt', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/main.js'), 'utf8');
+  const m = /function olderVersion\(a, b\) \{[\s\S]*?\n\}/.exec(src);
+  const olderVersion = new Function(m[0] + '; return olderVersion;')();
+  assert.ok(olderVersion('1.0.4', '1.0.5') && olderVersion('1.0.9', '1.0.10') && !olderVersion('1.0.5', '1.0.5') && !olderVersion('1.1.0', '1.0.9'));
+  assert.ok(/veraltet – bitte auf/.test(src));
+});
+
+test('Profile: neue Namen, Kennungen unverändert (gespeicherte Auswahl bleibt)', () => {
+  const names = Profiles.list.map((p) => p.name);
+  assert.deepStrictEqual(names, ['Street Four', 'Power Four', 'Sport Four', 'Supra Turbo', 'Rally Five', 'Flat Four', 'Muscle V8', 'Track V10']);
+  const UI = require(path.join(ROOT, 'apps/iconix_sounds/ui.js'));
+  const texts = [];
+  const g = { rect() {}, rrect() {}, line() {}, arc() {}, text(t) { texts.push(String(t)); } };
+  UI.draw(g, { profiles: Profiles.list, profile: 'diesel4', rpm: 900, volume: 0.8, enabled: true, wide: true, audio: { ok: true, text: 'x' } });
+  assert.ok(texts.includes('4 Zylinder · Turbo · für den 220d'), 'Bauart unter dem Namen: ' + texts.filter((t) => /Zylinder/.test(t)));
+  const app = JSON.parse(fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/app.json'), 'utf8'));
+  assert.deepStrictEqual(app.settings.find((x) => x.key === 'profile').options.map((o) => o[0]), Profiles.ids);
+});
+
+test('Lautstärkeknopf: Weiterdrehen nach dem Trennen hält die Pause (Sound kommt nicht mitten im Drehen zurück)', async () => {
+  const { am, signals } = fakeAm();
+  const r = new CarRoute(signals, quiet, null);
+  r.want('overlay', true);
+  await r._step(); await r._knobTick(); r.knobQuiet = 0;
+  am.vol = 24; await r._knobTick();                   // erster Dreh
+  await r._step();                                    // Verbindung frei -> Beruhigungszeit beginnt
+  assert.strictEqual(am.conns.length, 0);
+  await r._knobTick();                                // Zustand "getrennt" gemerkt (Beruhigung läuft)
+  assert.ok(Date.now() < r.knobQuiet, 'Beruhigung läuft');
+  r.knobAt = Date.now() - 1200;                       // 1,2 s nach dem ersten Dreh ...
+  am.vol = 27; await r._knobTick();                   // ... wird weiter gedreht
+  assert.ok(Date.now() - r.knobAt < 100, 'Weiterdrehen zählt auch während der Beruhigung');
+  await r._step();
+  assert.strictEqual(am.conns.length, 0, 'bleibt frei, solange gedreht wird');
+});
+
+test('Lautstärkeknopf: Auto ohne Verbindungszustand – Drehen wird trotzdem erkannt, sobald der Ton hörbar ist', async () => {
+  const { am, signals } = fakeAm();
+  const r = new CarRoute(signals, quiet, null);
+  r.want('overlay', true);
+  await r._step();
+  am.conns.forEach((c) => { delete c.connectionState; });
+  r.connState = null; r.conn.at = Date.now() - CarRoute.AUDIBLE_AFTER_MS - 10;
+  assert.ok(r.audible(), 'nach 8 s hörbar');
+  await r._knobTick(); r.knobQuiet = 0;
+  am.vol = 31; await r._knobTick();
+  assert.ok(r.knobHeld(), 'Dreh erkannt, Knopf gehört der Musik');
 });
 
 (async () => {

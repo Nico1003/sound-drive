@@ -50,31 +50,36 @@ beim Gleiten bleibt er dezent im Hintergrund, im Schub blubbert er leise aus.
 
 | Profil | Charakter |
 |---|---|
-| **Turbo Vierzylinder** (Standard) | Kernig und drehfreudig. |
-| **Turbo Vier Sport** | Wie der Vierzylinder, aber mit Sportauspuff: offener und bellender. |
+| **Street Four** (Standard) | Turbo-Vierzylinder: kernig und drehfreudig. |
+| **Power Four** | Auf den 220d abgestimmt: wie Street Four, aber satter und kräftiger. Das kurze Diesel-Drehzahlband wird weiter gestreckt, dazu mehr Bass und Fülle, ruhiger Leerlauf ohne Brummen und Nageln. |
+| **Sport Four** | Wie Street Four, aber mit Sportauspuff: offener und bellender. |
 | **Supra Turbo** | Reihensechser mit Turbo im Supra-Stil: seidig und rauchig, dreht frei hoch. |
-| **Turbo Fünfzylinder** | Die ungerade Zündfolge gibt das typische Trällern, rau und kehlig. |
-| **Turbo Boxer** | Ungleich lange Krümmer je Seite: das bekannte Grummeln. |
-| **V8 Bariton** | Cross-Plane-V8 mit dem typischen ungleichmäßigen Blubbern. |
-| **Racing V10** | Voller, dichter Zehnzylinder. |
+| **Rally Five** | Turbo-Fünfzylinder: Die ungerade Zündfolge gibt das typische Trällern, rau und kehlig. |
+| **Flat Four** | Turbo-Boxer: Ungleich lange Krümmer je Seite geben das bekannte Grummeln. |
+| **Muscle V8** | Cross-Plane-V8 mit dem typischen ungleichmäßigen Blubbern. |
+| **Track V10** | Voller, dichter Zehnzylinder. |
+
+Die Namen wurden in Version 1.0.5 geändert; die gewählte Einstellung bleibt beim Update erhalten.
 
 **Hörproben** (so, wie sie im Auto ankommen: 24 kHz mono; Leerlauf, Vollgas bis 4800 U/min, Schub,
 Konstantfahrt, Teillast):
-[Turbo Vierzylinder](docs/audio/sounddrive_turbo4.wav) ·
+[Street Four](docs/audio/sounddrive_turbo4.wav) ·
+[Power Four](docs/audio/sounddrive_diesel4.wav) ·
 [Supra Turbo](docs/audio/sounddrive_supra.wav) ·
-[Turbo Fünfzylinder](docs/audio/sounddrive_turbo5.wav)
+[Rally Five](docs/audio/sounddrive_turbo5.wav)
 
 ### Bedienung und Einstellungen
 
-- Profil und Lautstärke per Antippen wählen – große Knöpfe, zwei je Reihe, gut während der Fahrt zu treffen; der
+- Profil und Lautstärke per Antippen wählen (den Lautstärke-Regler auch antippen oder ziehen) – große Knöpfe, zwei je Reihe, gut während der Fahrt zu treffen; der
   iDrive-Knopf und die Lautstärkeregelung des Autos bleiben unangetastet
 - Lautstärke 0–100 % (100 % ist so laut wie früher 150 %: leise Passagen deutlich lauter, Spitzen begrenzt), **Ausprägung** (wie stark der Sound mit der Last aufmacht), Sport-Boost, stumm im Stand
-- **Sound folgt dem Fahrmodus** (abschaltbar) und **Breite Ansicht** (Standard, nutzt die ganze Breite; aus: Platz für
-  das Seitenfenster der geteilten Ansicht)
+- **Sound folgt dem Fahrmodus** (abschaltbar); die Seite nutzt die ganze Breite (**Schmale Ansicht** lässt Platz für
+  das Seitenfenster der geteilten Ansicht). Reiter **Sound** im Kopf führt aus den Einstellungen zurück
 - **Lautstärkeknopf regelt die Musik** (Standard): Das Auto behandelt den Motorsound wie eine Durchsage – solange
   er läuft, würde der Knopf ihn statt der Musik verstellen. Dreht man am Knopf, tritt der Motorsound kurz zur Seite
-  (weich aus, Kanal frei), der Knopf regelt die Musik. 1,5 s nach dem letzten Drehen verbindet Sound Drive wieder;
-  hörbar ist der Sound, sobald das Auto die Verbindung freigibt (einige Sekunden). Ausgeschaltet
+  (weich aus, Kanal frei), der Knopf regelt die Musik. 1,5 s nach dem letzten Drehen verbindet Sound Drive wieder (wer weiterdreht, verlängert die Pause);
+  hörbar ist der Sound, sobald das Auto die Verbindung freigibt (einige Sekunden). Dass das Auto beim Verbinden und
+  Trennen die Lautstärke selbst umstellt, zählt nicht als Drehen (sonst entstünde eine Schleife). Ausgeschaltet
   verhält es sich wie im Auto vorgesehen (der Knopf regelt den Motorsound).
 - **Bei Telefon/Ansagen leiser:** Telefonate, Sprachassistent, Parkpiepser und Warngongs senken den Motorsound um
   etwa 12 dB ab; Navigationsansagen bewusst nicht
@@ -126,8 +131,8 @@ Klappt es nicht auf Anhieb: In der Statuszeile sollte „Overlay-Mix: verbunden�
 
 | Komponente | Version |
 |---|---|
-| Sound Drive (App) | 1.0.1 |
-| Sound Drive Audio (Tool) | 1.0.1 |
+| Sound Drive (App) | 1.0.5 |
+| Sound Drive Audio (Tool) | 1.0.5 |
 
 ---
 

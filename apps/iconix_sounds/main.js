@@ -25,7 +25,9 @@ const AudioLink = require('./audio_link');
 const VehicleFeed = require('./vehicle_feed');
 const CarRoute = require('./car_route');
 
-const VERSION = '1.0.1';
+const VERSION = '1.0.5';
+// eigener Reiter "Sound" neben "Settings" im Kopf des Kits (führt aus den Einstellungen zurück)
+const TAB_INFO = { tabs: ['Sound'], sel: 0, badges: [] };
 // Audiomanager-Verbindung: Sie braucht im Auto ~6 s, bis sie hörbar ist (CS_CONNECTED). Darum wird sie schon beim
 // Aufwachen des Autos aufgebaut (erste Fahrzeugdaten) und gehalten, solange der Motor läuft oder kürzlich lief –
 // sonst fehlten bei jedem Motorstart und nach jeder Pause ein paar Sekunden Ton.
@@ -33,7 +35,7 @@ const ROUTE_KEEP_MS = 120000;  // so lange nach dem letzten Lebenszeichen (Ton, 
 const WAKE_GAP_MS = 300000;    // so lange ohne Fahrzeugdaten = das Auto hat geschlafen
 const DEFAULTS = {
   enabled: true, profile: Profiles.DEFAULT, volume: 80, intensity: 70, sport: false,
-  muteParked: false, duck: true, knobMusic: true, followMode: true, wide: true, speedVol: 4, startSound: true, bassDb: 0, bark: 100, loadSource: 'auto', route: CarRoute.DEFAULT_ROUTE, alsaDevice: 'auto', maxTorque: 400, carIdle: 800, carRedline: 4800
+  muteParked: false, duck: true, knobMusic: true, followMode: true, narrow: false, speedVol: 4, startSound: true, bassDb: 0, bark: 100, loadSource: 'auto', route: CarRoute.DEFAULT_ROUTE, alsaDevice: 'auto', maxTorque: 400, carIdle: 800, carRedline: 4800
 };
 
 function setting(settings, key) {
@@ -61,6 +63,7 @@ function startCore(host) {
   let driveMode = null;      // Fahrerlebnisschalter: eco | comfort | sport | sportplus
   let last = null;
   let feedCfg = null, synthCfgCache = null, uiCfg = null;
+  let volPreview = null;     // Lautstärke (0..100), solange der Regler gezogen wird – erst beim Loslassen gespeichert
 
   const refresh = () => {
     const g = k => setting(settings, k);
@@ -72,7 +75,7 @@ function startCore(host) {
     synthCfgCache = {
       enabled: bool(g('enabled')) && !parkedMute,
       profile: Profiles.ids.indexOf(String(g('profile'))) >= 0 ? String(g('profile')) : Profiles.DEFAULT,
-      volume: Math.min(100, num(g('volume'), 80)) / 100,
+      volume: Math.min(100, volPreview != null ? volPreview : num(g('volume'), 80)) / 100,
       intensity: num(g('intensity'), 70) / 100,
       sport: bool(g('sport')),
       carIdle: feedCfg.carIdle,
@@ -89,7 +92,7 @@ function startCore(host) {
     // Gerät für den Dienst: SmartX-Kanal des Tonwegs, bei "ALSA direkt" das frühere Ausgabegerät
     const rt = CarRoute.route(synthCfgCache.route);
     synthCfgCache.device = rt.device || String(g('alsaDevice') || 'auto');
-    uiCfg = { muteParked: bool(g('muteParked')), duck: bool(g('duck')), wide: bool(g('wide')), knobMusic: bool(g('knobMusic')) };
+    uiCfg = { muteParked: bool(g('muteParked')), duck: bool(g('duck')), wide: !bool(g('narrow')), knobMusic: bool(g('knobMusic')) };
   };
   refresh();
 
@@ -143,7 +146,16 @@ function startCore(host) {
 
   // Testsound: Tonweg sofort bereitstellen; ist er noch nicht hörbar (verbindet ~6 s), startet der Test, sobald er es ist
   const test = () => { lastActivity = Date.now(); if (route.audible()) link.test(); else pendingTest = Date.now(); };
-  core = { link, feed, route, pushCfg, synthCfg, test, ui: () => uiCfg, log, last: () => last };
+  // Regler ziehen: Lautstärke sofort hören und sehen, ohne bei jedem Schritt die Einstellungsdatei zu schreiben
+  const previewVolume = v => {
+    if (v === volPreview) return;
+    const prev = volPreview;
+    volPreview = v;
+    // Vorschau endet mit genau dem gespeicherten Wert: hörbar ändert sich nichts, nichts senden
+    if (v == null && prev === num(setting(settings, 'volume'), 80)) return;
+    pushCfg();
+  };
+  core = { link, feed, route, pushCfg, synthCfg, test, previewVolume, ui: () => uiCfg, log, last: () => last };
   return core;
 }
 
@@ -184,16 +196,31 @@ function kitGfx(c) {
 }
 
 
+/** a < b für Versionen wie "1.0.4" (Teile als Zahlen). */
+function olderVersion(a, b) {
+  const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] || 0, y = pb[i] || 0;
+    if (x !== y) return x < y;
+  }
+  return false;
+}
+
 // Statuszeile: Dienst + Tonweg; neues Objekt nur, wenn sich etwas ändert
 let audioCache = { key: '', val: null };
 function audioStatus(c) {
   const a = c.link.status, r = c.route.short();
-  const key = a.text + '|' + a.ok + '|' + r;
+  // Tool älter als die App (nur die App aktualisiert): neue Sounds kennt der Dienst dann nicht und spielt still den
+  // Standard-Sound – darauf hinweisen statt es unbemerkt zu lassen
+  const ds = c.link.connected ? c.link.daemonStatus : null;
+  const old = ds && ds.version && olderVersion(String(ds.version), VERSION) ? ds.version : '';
+  const key = a.text + '|' + a.ok + '|' + r + '|' + old;
   if (key !== audioCache.key) {
     const routeOk = !c.route.needsAm() || c.route.state === 'verbunden' || c.route.state === 'aus';
     // langen Kanalnamen kürzen ("alsa:plug:smartx:Media_Overlay_…_CF_24_MONO" -> "SmartX")
     const dev = a.text.replace(/^Audio: /, '').replace(/alsa:(plug:)?smartx:[^ ·]+/, 'SmartX');
-    audioCache = { key, val: { ok: a.ok && routeOk, text: r + ' · ' + dev } };
+    audioCache = { key, val: old ? { ok: false, text: 'Sound Drive Audio ' + old + ' veraltet – bitte auf ' + VERSION + ' aktualisieren' }
+      : { ok: a.ok && routeOk, text: r + ' · ' + dev } };
   }
   return audioCache.val;
 }
@@ -224,12 +251,15 @@ mgu.run({
     const c = startCore(ctx);
     const log = ctx.log || console;
     const get = k => setting(ctx.settings, k);
+    // settings.set meldet die Änderung selbst über onChange (-> pushCfg); nur ohne onChange hier nachschieben,
+    // sonst ginge jede Änderung zweimal an den Dienst
+    const hasOnChange = !!(ctx.settings && ctx.settings.onChange);
     const set = (k, v) => {
       try { ctx.settings.set(k, v); } catch (e) { log.warn('iconix: settings.set ' + k + ': ' + e.message); }
-      c.pushCfg();
+      if (!hasOnChange) c.pushCfg();
     };
 
-    if (ctx.settings && ctx.settings.onChange) ctx.settings.onChange(() => c.pushCfg());
+    if (hasOnChange) ctx.settings.onChange(() => c.pushCfg());
 
     const nextProfile = () => set('profile', Profiles.next(String(get('profile')), 1));
     const changeVolume = steps => {
@@ -284,8 +314,50 @@ mgu.run({
     let own = false;
     if (ctx.controller && ctx.controller.grab) { try { ctx.controller.grab(false); } catch (e) { /* egal */ } }
     // Rückfall: Tippen ohne Ziel (falls ein Kit-Stand Taps nur über onTap liefert)
+    // Reiter im Kopf (wo das Kit den Bildschirm führt): "Sound" = diese Seite; schließt eine offene Einstellungsseite
+    if (ctx.onTab) ctx.onTab(() => { lastKey = ''; });
+    // Lautstärke-Regler: antippen oder mit dem Finger ziehen (ganze Geste über ctx.onTouch). Rastet in 5-%-Schritten
+    // (wie die Auswahl in den Einstellungen). Beim Ziehen gilt der Wert sofort (Vorschau, höchstens alle 60 ms an den
+    // Dienst), gespeichert wird erst beim Loslassen.
+    const volOf = f => Math.round(f * 20) * 5;
+    const setVolFrac = f => {
+      const v = volOf(f);
+      c.previewVolume(v);                                  // (schon so, wenn gezogen wurde: dann nichts zu senden)
+      if (v !== num(get('volume'), 80)) set('volume', v);
+      c.previewVolume(null);
+    };
+    let volDrag = null;
+    // Geste ohne "Loslassen" (z. B. Einstellungen gehen mitten im Ziehen auf): nach 1,5 s ohne Bewegung übernehmen,
+    // sonst bliebe die Vorschau hängen und die gespeicherte Lautstärke wäre wirkungslos
+    const endDrag = () => { const d = volDrag; if (!d) return; volDrag = null; clearTimeout(d.timer); setVolFrac(d.f); };
+    const armDrag = () => { clearTimeout(volDrag.timer); volDrag.timer = setTimeout(endDrag, 1500); };
+    if (ctx.onTouch) {
+      ctx.onTouch((phase, x, y) => {
+        if (phase === 1) {
+          if (volDrag) endDrag();
+          if (diag) return false;
+          const f = UI.volAt(x, y, c.ui().wide);
+          if (f < 0) return false;
+          volDrag = { t: Date.now(), f, timer: null };
+          armDrag();
+          c.previewVolume(volOf(f));
+          return true;
+        }
+        if (!volDrag) return false;
+        volDrag.f = UI.volAt(x, y, c.ui().wide, true);
+        if (phase === 3) { endDrag(); return true; }
+        armDrag();
+        if (Date.now() - volDrag.t >= 60) { volDrag.t = Date.now(); c.previewVolume(volOf(volDrag.f)); }
+        return true;
+      });
+    }
     if (ctx.onTap) {
-      ctx.onTap((x, y) => { const h = UI.hitAt(Profiles.list, x, y, !!diag, c.ui().wide); if (h) act(h); });
+      ctx.onTap((x, y) => {
+        const h = UI.hitAt(Profiles.list, x, y, !!diag, c.ui().wide);
+        if (h) { act(h); return; }
+        const f = diag ? -1 : UI.volAt(x, y, c.ui().wide);
+        if (f >= 0) setVolFrac(f);
+      });
     }
 
     // Bildschirm (wie apps/redline/main.js): pro Frame ctx.canvas(W, H) holen – das Kit gibt denselben,
@@ -307,6 +379,11 @@ mgu.run({
       if (now - lastDraw < 33 || (key === lastKey && now - lastDraw < 1000)) return undefined;
       lastKey = key; lastDraw = now;
       const cv = ctx.canvas(UI.W, UI.H);
+      // ganze Fläche im Seitenhintergrund löschen (nicht nur die Seite): sonst schimmert im Vollbild links unten und am
+      // Rand das HMI grau durch
+      if (cv.clear) cv.clear(UI.colors.bg);
+      // ein eigener Reiter "Sound" neben "Settings": Tippen darauf führt aus den Einstellungen zurück
+      cv.tabInfo = TAB_INFO;
       const g = kitGfx(cv);
       if (!!cv.own !== own) { own = !!cv.own; log.info('iconix: Kit führt den Bildschirm: ' + own); lastKey = ''; }
       st.profile = cfg.profile;

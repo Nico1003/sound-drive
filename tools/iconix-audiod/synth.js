@@ -50,7 +50,7 @@
   // Lautstärke 100 % = früher 150 % (Boost): der Überschuss über 1 geht vor den Kompressor
   var VOL_SCALE = 1.5;
   // Fahrmodus (Fahrerlebnisschalter): wie aggressiv der Sound ist. -1 = Eco (dezent, dumpf), 0 = Comfort,
-  // 1 = Sport (lauter, offener, bellender, mehr Zischen), 1,4 = Sport+. Übergang weich über ~1 s.
+  // 1 = Sport (lauter, offener, bellender), 1,4 = Sport+. Übergang weich über ~1 s.
   var MODE_AGG = { eco: -1, comfort: 0, sport: 1, sportplus: 1.4 };
   // Lautstärke steigt mit dem Tempo (Wind- und Abrollgeräusche): ab 50 km/h, volle Anhebung (cfg.speedVol dB) ab 130 km/h
   var SPD_FROM = 50, SPD_FULL = 130;
@@ -276,7 +276,12 @@
     this.cfg.bassDb = clamp(finite(+this.cfg.bassDb, 0), -8, 8);
     this.cfg.barkPct = clamp(finite(+this.cfg.barkPct, 1), 0.3, 1.6);
     if (this.cfg.bassDb !== this.bassSet && this.profile) this._setBoom();
-    if (c.profile && c.profile !== this.cfg.profile && c.profile !== this.pending) this.pending = Profiles.get(c.profile).id;
+    if (c.profile) {
+      var want = Profiles.get(c.profile).id;
+      // zurück zum laufenden Profil, bevor der Wechsel ausgeblendet war: Wechsel verwerfen (sonst käme das andere)
+      if (want === this.cfg.profile) this.pending = null;
+      else if (want !== this.pending) this.pending = want;
+    }
   };
 
   Synth.prototype.setParams = function (p) {

@@ -148,7 +148,7 @@ class AudioLink extends EventEmitter {
     const ds = this.daemonStatus;
     if (this.connected && ds) {
       head.push('Ausgabegerät: ' + (ds.device || 'auto') + ' · Python: ' + (ds.python || 'nicht gefunden'));
-      // Verzögerung und Aussetzer: Vorlauf passt sich an (Start 120 ms, bei ruhigem Lauf bis 70 ms)
+      // Verzögerung und Aussetzer: Vorlauf passt sich an (Start 100 ms, bei ruhigem Lauf bis 60 ms)
       head.push('Ton: Vorlauf ' + (ds.leadMs != null ? ds.leadMs + ' ms' : '?') +
         (ds.bufMs ? ' · ALSA-Puffer ' + ds.bufMs + ' ms' : '') + (ds.rt ? ' · Echtzeit ' + ds.rt : '') +
         ' · Aussetzer ' + (ds.underruns || 0) + (ds.late ? ' · verspätete Takte ' + ds.late : '') +

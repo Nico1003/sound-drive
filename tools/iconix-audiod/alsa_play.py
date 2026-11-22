@@ -198,7 +198,11 @@ def cmd_play(dev, rate, latency_us=200000, channels=2):
     pending = b''
     # Rückmeldung an engine.js: "P <gespielte Frames>" auf stdout. Damit schreibt der Dienst nur so viel vor,
     # wie wirklich fehlt – ohne sie staute sich Ton in der Pipe (bis ~1 s Verzögerung).
+    # Gemeldet werden nur Frames des Dienstes: Die Stille, die dieses Skript selbst nachlegt (Start, Stocken), zählt
+    # nicht mit. Sonst hielte der Dienst jede nachgelegte Stille für gespielten eigenen Ton, schriebe entsprechend mehr
+    # nach – und die Verzögerung wüchse mit jedem Stocken um mindestens 10 ms, bis der Player neu startet.
     total = 0
+    own = 0      # selbst nachgelegte Stille (Frames)
     delay = ctypes.c_long(0)
 
     def report():
@@ -208,7 +212,7 @@ def cmd_play(dev, rate, latency_us=200000, channels=2):
         if lib.snd_pcm_delay(h, ctypes.byref(delay)) < 0:
             return
         try:
-            os.write(1, ('P %d\n' % max(0, total - max(0, delay.value))).encode())
+            os.write(1, ('P %d\n' % max(0, total - own - max(0, delay.value))).encode())
         except OSError:
             pass
     # Schutz gegen Leerlaufen: Stockt der Dienst (Head Unit beim Hochfahren ausgelastet), spielt SmartX sonst den
@@ -229,6 +233,7 @@ def cmd_play(dev, rate, latency_us=200000, channels=2):
         w = lib.snd_pcm_writei(h, zeros, fill_n)
         if w > 0:
             total += w
+            own += w
     try:
         while True:
             if select is not None and total > 0:
@@ -244,6 +249,7 @@ def cmd_play(dev, rate, latency_us=200000, channels=2):
                         w = lib.snd_pcm_writei(h, zeros, fill_n)
                         if w > 0:
                             total += w
+                            own += w
                             # je Stocken EINE Meldung (beim ersten Nachlegen), damit der Dienst jedes Mal
                             # mitzählt und seinen Vorlauf vergrößert – auch nach vielen Aussetzern
                             if not stalled:
