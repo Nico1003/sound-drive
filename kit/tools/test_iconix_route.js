@@ -13,6 +13,9 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..', '..');
 const CarRoute = require(path.join(ROOT, 'apps/iconix_sounds/car_route.js'));
 const E = require(path.join(ROOT, 'tools/iconix-audiod/engine.js'));
+const Clock = require(path.join(ROOT, 'apps/iconix_sounds/clock.js'));
+/** Uhr von App und Dienst stellen (null = nichts ändern); gibt die vorherige zurück. */
+function setClock(fn) { const old = Clock.now; if (fn) { Clock.now = fn; E.clock.now = fn; } return old; }
 
 // ---- nachgebauter Audiomanager ------------------------------------------------
 function fakeAm(opts) {
@@ -289,7 +292,7 @@ test('Dienst rendert für einen 24-kHz-Mono-Kanal halb so viele Frames mit 2 Byt
     write(b) { writes.push(b.length); return true; }, start() { return true; }, stop() {} };
   eng.synth.configure({ enabled: true, volume: 0.5 });
   eng.params({ rpm: 2000, load: 0.5, speed: 50, overrun: false });
-  eng.t0 = Date.now() - 100; eng.written = 0;
+  eng.t0 = Clock.now() - 100; eng.written = 0;
   eng._tick();
   const bytes = writes.reduce((a, b) => a + b, 0);
   assert.ok(eng.written % 2 === 0 && eng.written > 0);
@@ -304,7 +307,7 @@ test('Regelkreis mit Rückmeldung des Players: Vorlauf begrenzt (Start 100 ms), 
     played: 0, write(b) { bytes += b.length; return true; }, start() { return true; }, stop() {} };
   eng.synth.configure({ enabled: true, volume: 0.5 });
   eng.params({ rpm: 2000, load: 0.5, speed: 50, overrun: false });
-  eng.t0 = Date.now() - 5000; eng.written = 0;
+  eng.t0 = Clock.now() - 5000; eng.written = 0;
   for (let i = 0; i < 20; i++) eng._tick();               // Kanal spielt nichts ab (z. B. noch nicht verbunden)
   const queuedMs = (bytes / 2) / 24000 * 1000;
   assert.ok(queuedMs <= E.FB_LEAD_START + 1 && queuedMs > 50, 'Warteschlange ' + queuedMs.toFixed(0) + ' ms');
@@ -328,9 +331,9 @@ test('Runterschalten: Zwischengas (Drehzahl springt hoch, Moment negativ) klingt
   const feed = new VehicleFeed(null, { info() {}, warn() {} }, () => ({ loadSource: 'auto', maxTorque: 400, carIdle: 800 }));
   const out = [];
   feed.on('sample', (x) => out.push(x));
-  const realNow = Date.now;
+  const realNow = setClock(null);
   let t = 1e12;
-  Date.now = () => t;
+  setClock(() => t);
   try {
     feed.v.torque = -20; feed.v.torqueAt = t; feed.v.speed = 60; feed.v.speedAt = t;
     for (let i = 0; i < 10; i++) { t += 50; feed.v.rpm = 1800; feed.v.torqueAt = t; feed._sample(); }   // Schub
@@ -340,7 +343,7 @@ test('Runterschalten: Zwischengas (Drehzahl springt hoch, Moment negativ) klingt
     assert.ok(!blip.overrun && blip.load > 0.2, 'beim Zwischengas: overrun ' + blip.overrun + ', Last ' + blip.load.toFixed(2));
     for (let i = 0; i < 12; i++) { t += 50; feed.v.rpm = 3000; feed.v.torqueAt = t; feed._sample(); }   // wieder Schub
     assert.ok(out[out.length - 1].overrun, 'danach wieder Schub');
-  } finally { Date.now = realNow; }
+  } finally { setClock(realNow); }
 });
 
 test('Autostart: App hat einen Hintergrund-Einstieg (background) und app.json autostart', () => {
@@ -355,8 +358,8 @@ test('Vorlauf: Start 100 ms, Aussetzer +30 ms, ruhig wieder knapper – aber nic
     played: 0, underruns: 0, write() { return true; }, start() { return true; }, stop() {} };
   eng.synth.configure({ enabled: true, volume: 0.5 });
   eng.params({ rpm: 2000, load: 0.5, speed: 50, overrun: false });
-  const realNow = Date.now; let t = realNow();
-  Date.now = () => t;
+  const realNow = setClock(null); let t = realNow();
+  setClock(() => t);
   try {
     eng._tick();
     assert.strictEqual(eng.fbLead, E.FB_LEAD_START);
@@ -371,7 +374,7 @@ test('Vorlauf: Start 100 ms, Aussetzer +30 ms, ruhig wieder knapper – aber nic
     const e2 = new E.Engine({ log() {} }); e2.out = Object.assign({}, eng.out, { underruns: 0 }); e2.synth.configure({ enabled: true });
     for (let s = 0; s < 33 * 60; s++) { t += 1000; e2.lastParams = t; if (s % 20 === 19 && (e2.fbLead || 100) < 85) e2.out.underruns++; e2._tick(); }
     assert.ok(e2.out.underruns <= 3, 'Aussetzer in 33 min: ' + e2.out.underruns);
-  } finally { Date.now = realNow; }
+  } finally { setClock(realNow); }
 });
 
 test('Player: Stille-Schutz gegen Leerlaufen und Stille zu Beginn (alsa_play.py)', () => {
@@ -649,7 +652,7 @@ test('Lautstärkeknopf: Drehen gibt den Knopf der Musik (Motorsound stumm, Verbi
   am.vol = 25; await r._knobTick();          // weiter gedreht: bleibt frei
   await r._step();
   assert.strictEqual(am.conns.length, 0);
-  r.knobAt = Date.now() - 2000;              // 2 s Ruhe
+  r.knobAt = Clock.now() - 2000;              // 2 s Ruhe
   await r._step();
   assert.strictEqual(am.conns.length, 1, 'nach Ruhe wieder verbunden');
   assert.ok(r.audible());
@@ -675,7 +678,7 @@ test('Hörbar erst ab CS_CONNECTED (Auto braucht ~6 s); verlorene Verbindung sof
   // ohne CS_CONNECTED-Meldung: spätestens nach AUDIBLE_AFTER_MS hörbar
   const r2 = new CarRoute(fakeAm({ state: 1 }).signals, quiet, null);
   r2.want('overlay', true); await r2._step();
-  r2.conn.at = Date.now() - CarRoute.AUDIBLE_AFTER_MS - 10;
+  r2.conn.at = Clock.now() - CarRoute.AUDIBLE_AFTER_MS - 10;
   assert.ok(r2.audible());
   // Wege ohne Audiomanager sind immer hörbar
   const r3 = new CarRoute(fakeAm().signals, quiet, null); r3.want('carplay', true);
@@ -699,7 +702,7 @@ test('Motor aus: Drehzahl 0 kommt nur einmal – App sendet bis 2 min weiter, la
   const AudioLink = require(path.join(ROOT, 'apps/iconix_sounds/audio_link.js'));
   const l = new AudioLink(quiet, 'test');
   const sent = []; l.connected = true; l.send = (m) => { sent.push(m); return true; };
-  const realNow = Date.now; let t = 1e12; Date.now = () => t;
+  const realNow = setClock(null); let t = 1e12; setClock(() => t);
   try {
     l.params({ rpm: 0, load: 0, speed: 0, overrun: false, at: t });
     t += 60000; l.lastSend = 0; l._tick();
@@ -709,7 +712,7 @@ test('Motor aus: Drehzahl 0 kommt nur einmal – App sendet bis 2 min weiter, la
     l.params({ rpm: 2500, load: 0.5, speed: 80, overrun: false, at: t });
     t += 3000; const m = sent.length; l.lastSend = 0; l._tick();
     assert.strictEqual(sent.length, m, 'laufender Motor ohne neue Daten: nicht weiter senden (sonst hinge der Ton)');
-  } finally { Date.now = realNow; }
+  } finally { setClock(realNow); }
 });
 
 test('Oberfläche im Auto (Kit führt den Bildschirm): kein doppelter Titel, breite Ansicht ist Standard', () => {
@@ -760,7 +763,7 @@ test('Lautstärkeknopf: Lautstärke-Sprung des Autos beim Verbinden/Trennen ist 
   await r._step();                                    // trennen -> Auto senkt Senke 1
   assert.strictEqual(am.conns.length, 0);
   await r._knobTick();                                // Sprung durchs Trennen: verlängert höchstens die Pause
-  r.knobAt = Date.now() - 2000;
+  r.knobAt = Clock.now() - 2000;
   await r._step();                                    // wieder verbinden -> Auto hebt an
   assert.strictEqual(am.conns.length, 1, 'nach Ruhe wieder verbunden');
   for (let i = 0; i < 4; i++) { await r._knobTick(); expire(); }
@@ -840,23 +843,25 @@ test('Autostart: Fahrzeugdienst beim Hochfahren noch nicht bereit – Abo wird w
   } finally { global.setTimeout = real; }
 });
 
-test('Autostart: Beenden gibt den Tonweg frei; zurückgestellte Uhr blockiert das Verbinden nicht', async () => {
+test('Autostart: Beenden gibt den Tonweg frei; springende Uhrzeit stört nicht', async () => {
   const { am, signals } = fakeAm();
   const r = new CarRoute(signals, quiet, null);
   r.want('overlay', true); await r._step();
   assert.strictEqual(am.conns.length, 1);
   await r.stop(); await r._step();
   assert.strictEqual(am.conns.length, 0, 'Verbindung getrennt und nicht neu aufgebaut');
-  const f = fakeAm({ refuse: true }), r2 = new CarRoute(f.signals, quiet, null);
-  const realNow = Date.now; let t = 2e12; Date.now = () => t;
+  // die Uhrzeit springt (vor und zurück): Tonweg, Fahrdaten und Dienst merken nichts davon
+  const f = fakeAm(), r2 = new CarRoute(f.signals, quiet, null), eng = new E.Engine({ log() {} }), real = Date.now;
   try {
-    r2.want('overlay', true); await r2._step();
-    assert.ok(r2.nextTry > t, 'abgelehnt, nächster Versuch gemerkt');
-    t -= 3600000;                                      // Uhr eine Stunde zurück
-    const n = f.am.calls.filter((c) => /^connect/.test(c)).length;
-    await r2._step();
-    assert.ok(f.am.calls.filter((c) => /^connect/.test(c)).length > n, 'sofort wieder versucht');
-  } finally { Date.now = realNow; }
+    r2.want('overlay', true); await r2._step(); await r2._knobTick();
+    eng.configure({ enabled: true, volume: 0.5 }); eng.params({ rpm: 2000, load: 0.5, speed: 50 }); eng._tick();
+    for (const jump of [7200000, -7200000, 3000]) {
+      Date.now = () => real() + jump;
+      await r2._step(); await r2._knobTick(); eng._tick();
+      assert.ok(r2.audible() && f.am.conns.length === 1 && !r2.knobHeld(), 'Tonweg nach Sprung ' + jump);
+      assert.ok(!eng.synth.stale && eng.late === 0, 'Dienst nach Sprung ' + jump);
+    }
+  } finally { Date.now = real; }
 });
 
 test('Dienst: Python beim Hochfahren noch nicht da – wird später gefunden', () => {
@@ -886,7 +891,7 @@ test('Dienst: langsames Öffnen des Kanals (nach dem Hochfahren) – kein Stau, 
   o.fmt = { rate: 24000, ch: 1 }; o.backend = 'x'; o.error = null; o.played = 0; o.gotPos = false; o.sent = 0; o.opened = false;
   eng.out = o;
   eng.synth.configure({ enabled: true, volume: 0.5 });
-  const realNow = Date.now; let t = realNow(); Date.now = () => t;
+  const realNow = setClock(null); let t = realNow(); setClock(() => t);
   const run = (ms, player) => { for (let i = 0; i < ms / 10; i++) { t += 10; eng.params({ rpm: 2000, load: 0.5, speed: 50, overrun: false }); eng._tick(); if (player) player(); } };
   try {
     o.startedAt = t; eng.lastTick = t;
@@ -907,7 +912,7 @@ test('Dienst: langsames Öffnen des Kanals (nach dem Hochfahren) – kein Stau, 
     assert.ok(q > 24000, 'Takt nach Uhr staut');
     for (let i = 0; i < 600; i++) { t += 10; q = Math.max(0, q - 240); p.played = p.sent - q; p.gotPos = true; e2.params({ rpm: 2000, load: 0.5, speed: 50 }); e2._tick(); }
     assert.ok(q / 24 < 130, 'Stau abgebaut: ' + Math.round(q / 24) + ' ms');
-  } finally { Date.now = realNow; }
+  } finally { setClock(realNow); }
 });
 
 test('Dienst: läuft in der CPU-Gruppe der Standarddienste, nicht vor der Bedienoberfläche', () => {
@@ -961,6 +966,21 @@ test('Tonweg: fehlgeschlagenes Trennen wird nachgeholt (sonst bliebe die Musik l
   assert.ok(!am.conns.some((c) => c.sourceID === 1048), 'Beenden trennt trotz Fehler');
 });
 
+test('Diagnose: Tonquellen vollständig im Log (QR-Log schneidet nach 300 Zeichen ab), einmal je Start', async () => {
+  const sources = Array.from({ length: 60 }, (x, i) => ({ sourceID: 1000 + i, name: 'QuelleMitLangemNamen_' + i, sourceClassID: i % 5 }));
+  const { signals } = fakeAm({ sources }); const call = signals.call;
+  signals.call = async (p, m, x) => (m === 'getListSourceClasses' ? { listSourceClasses: [{ sourceClassID: 3, name: 'Interrupt', listClassProperties: [{ classProperty: 'CP_X', value: 1 }] }] } : call(p, m, x));
+  const lines = [], r = new CarRoute(signals, { info: (m) => lines.push(m), warn() {} }, null);
+  await r.diagLines(); await r.diagLines();
+  const all = lines.join(' ');
+  sources.forEach((s) => assert.strictEqual(all.split(s.sourceID + ' ' + s.name + ' K').length, 2, s.name));
+  assert.ok(lines.every((l) => l.length < 290), 'längste Zeile ' + Math.max(...lines.map((l) => l.length)));
+  assert.ok(/AM-Klassen K3 Interrupt \[X=1\]/.test(all), all.slice(-400));
+  assert.ok(/AM-Eigenschaften unserer Quelle: unbekannt/.test(all), 'fehlender Aufruf stört nicht');
+  const am = JSON.parse(fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/app.json'), 'utf8')).signals['org.genivi.am.commandinterface.CommandControl']._methods;
+  assert.ok(am.every((m) => /^(connect|disconnect|getList)/.test(m)), 'nur lesen und verbinden, keine Lautstärke setzen');
+});
+
 test('App: "background" gibt es nur einmal (der zweite Eintrag gewänne still)', () => {
   const src = fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/main.js'), 'utf8');
   assert.strictEqual(src.split(/\n  background\(bg\)/).length - 1, 1);
@@ -971,7 +991,7 @@ test('Tempo: läuft beim Segeln (Motor aus, keine Drehzahl-Meldungen) weiter', (
   const h = {};
   const feed = new VehicleFeed({ watch: async (i, n, x) => { Object.assign(h, x); return {}; } }, quiet, () => ({ loadSource: 'auto', maxTorque: 400, carIdle: 800 }));
   feed.start();
-  const realNow = Date.now; let t = 2e12; Date.now = () => t;
+  const realNow = setClock(null); let t = 2e12; setClock(() => t);
   try {
     h.statusCarSpeed2({ speedVehicleCentreOfGravity: 80 / 0.015625 });
     h.statusEngineSpeed2({ actualValueRPMEngineCrankshaft: 0 });
@@ -979,7 +999,7 @@ test('Tempo: läuft beim Segeln (Motor aus, keine Drehzahl-Meldungen) weiter', (
     h.statusCarSpeed2({ speedVehicleCentreOfGravity: 75 / 0.015625 });
     assert.strictEqual(feed.speed(), 75, 'ohne Drehzahl-Meldung aktuell');
     t += 9000; assert.strictEqual(feed.speed(), 0, 'lange keine Daten');
-  } finally { Date.now = realNow; }
+  } finally { setClock(realNow); }
 });
 
 test('Tonweg: veraltete Verbindungsliste wirft eine neue Verbindung nicht weg; Pause wird angezeigt', async () => {
@@ -995,7 +1015,7 @@ test('Tonweg: veraltete Verbindungsliste wirft eine neue Verbindung nicht weg; P
   const fresh = r.conn;
   release(); await poll;
   assert.ok(fresh && r.conn === fresh, 'neue Verbindung bleibt');
-  r.knobAt = Date.now(); await r._step(); await r._step();
+  r.knobAt = Clock.now(); await r._step(); await r._step();
   assert.ok(/Pause/.test(r.state), 'Zustand in der Pause: ' + r.state);
   // übernommene Verbindung, die noch aufgebaut wird: noch nicht hörbar
   const f2 = fakeAm({ conns: [{ mainConnectionID: 4, sourceID: 1048, sinkID: 1024, connectionState: 1 }] });
@@ -1077,10 +1097,10 @@ test('Lautstärkeknopf: Weiterdrehen nach dem Trennen hält die Pause (Sound kom
   await r._step();                                    // Verbindung frei -> Beruhigungszeit beginnt
   assert.strictEqual(am.conns.length, 0);
   await r._knobTick();                                // Zustand "getrennt" gemerkt (Beruhigung läuft)
-  assert.ok(Date.now() < r.knobQuiet, 'Beruhigung läuft');
-  r.knobAt = Date.now() - 600;                        // 0,6 s nach dem ersten Dreh ...
+  assert.ok(Clock.now() < r.knobQuiet, 'Beruhigung läuft');
+  r.knobAt = Clock.now() - 600;                        // 0,6 s nach dem ersten Dreh ...
   am.vol = 27; await r._knobTick();                   // ... wird weiter gedreht
-  assert.ok(Date.now() - r.knobAt < 100, 'Weiterdrehen zählt auch während der Beruhigung');
+  assert.ok(Clock.now() - r.knobAt < 100, 'Weiterdrehen zählt auch während der Beruhigung');
   await r._step();
   assert.strictEqual(am.conns.length, 0, 'bleibt frei, solange gedreht wird');
 });
@@ -1091,7 +1111,7 @@ test('Lautstärkeknopf: Auto ohne Verbindungszustand – Drehen wird trotzdem er
   r.want('overlay', true);
   await r._step();
   am.conns.forEach((c) => { delete c.connectionState; });
-  r.connState = null; r.conn.at = Date.now() - CarRoute.AUDIBLE_AFTER_MS - 10;
+  r.connState = null; r.conn.at = Clock.now() - CarRoute.AUDIBLE_AFTER_MS - 10;
   assert.ok(r.audible(), 'nach 8 s hörbar');
   await r._knobTick(); r.knobQuiet = 0;
   am.vol = 23; await r._knobTick();

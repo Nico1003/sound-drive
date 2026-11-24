@@ -13,6 +13,7 @@
  * Die ersten Rohwerte werden geloggt (data/iconix_sounds.log).
  */
 const EventEmitter = require('events');
+const Clock = require('./clock');
 
 const IF = {
   CDS: 'de.bmw.infotainment.vehicle.CDS',
@@ -83,7 +84,7 @@ class VehicleFeed extends EventEmitter {
         const raw = pick(v, 'actualValueRPMEngineCrankshaft');
         this._first('rpm', v);
         if (raw === null || raw === 65535) return;
-        this.v.rpm = raw * 0.25; this.v.rpmAt = Date.now();
+        this.v.rpm = raw * 0.25; this.v.rpmAt = Clock.now();
         this._sample();
       }
     });
@@ -92,7 +93,7 @@ class VehicleFeed extends EventEmitter {
         const raw = pick(v, 'speedVehicleCentreOfGravity');
         this._first('speed', v);
         if (raw === null || raw === 65535) return;
-        this.v.speed = raw * 0.015625; this.v.speedAt = Date.now();
+        this.v.speed = raw * 0.015625; this.v.speedAt = Clock.now();
       }
     });
     this._watch(IF.FES, {
@@ -106,10 +107,10 @@ class VehicleFeed extends EventEmitter {
         const raw = pick(v, 'actualValueTorqueCrankshaft');
         this._first('torque', v);
         if (raw === null || raw >= 4095) return; // 12 Bit, 4095 = kein Wert (car.js)
-        this.v.torque = raw * 0.5 - 1023.5; this.v.torqueAt = Date.now();
+        this.v.torque = raw * 0.5 - 1023.5; this.v.torqueAt = Clock.now();
       }
     });
-    this.startAt = Date.now();
+    this.startAt = Clock.now();
     this._watchSilent(0);
     // Gaspedal nur bei Bedarf abonnieren (siehe _pedalNeeded): jedes Abo kostet beim Hochfahren des Head Units Zeit,
     // und mit Motormoment (FES) wird das Pedal nicht gebraucht
@@ -127,7 +128,7 @@ class VehicleFeed extends EventEmitter {
         if (raw === null) return;
         const pct = raw * 0.025;
         if (pct < -2 || pct > 102) return;
-        this.v.pedal = clamp(pct, 0, 100); this.v.pedalAt = Date.now();
+        this.v.pedal = clamp(pct, 0, 100); this.v.pedalAt = Clock.now();
       }
     });
   }
@@ -193,14 +194,14 @@ class VehicleFeed extends EventEmitter {
     }
   }
 
-  fresh(key) { return Date.now() - this.v[key + 'At'] < FRESH_MS; }
+  fresh(key) { return Clock.now() - this.v[key + 'At'] < FRESH_MS; }
 
   /** Tempo jetzt (km/h) – unabhängig von der Drehzahl: beim Segeln (Motor aus) kommen keine Drehzahl-Meldungen. */
-  speed() { return Date.now() - this.v.speedAt < SPEED_FRESH_MS ? this.v.speed : 0; }
+  speed() { return Clock.now() - this.v.speedAt < SPEED_FRESH_MS ? this.v.speed : 0; }
 
   _sample() {
     const cfg = this.getCfg();
-    const now = Date.now();
+    const now = Clock.now();
     const rpm = this.v.rpm;
     let load = 0, overrun = false, src = cfg.loadSource;
     // Pedal erst abonnieren, wenn es gebraucht wird: Motor läuft, aber kein Motormoment kommt (Auto ohne FES-Moment)

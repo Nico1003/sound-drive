@@ -14,7 +14,7 @@ let now = 1.8e12, q = [], id = 1;
 global.setTimeout = (fn, ms) => { const x = { id: id++, t: now + (ms || 0), fn }; q.push(x); return x; };
 global.clearTimeout = global.clearInterval = (x) => { if (x) x.dead = true; };
 global.setInterval = (fn, ms) => { const x = { id: id++, t: now + ms, fn, ms }; q.push(x); return x; };
-Date.now = () => now;
+require(path.join(__dirname, '..', '..', 'apps/iconix_sounds/clock.js')).now = () => now;
 const tick = () => new Promise((ok) => realSI(ok));
 async function advance(ms) {
   const end = now + ms;
@@ -58,7 +58,7 @@ async function drive(name, hours, o) {
     else if (u < o.turn + o.ann) { const ms = 1500 + rnd() * 7000; c.announce(ms, rnd() < 0.5); anns++; quietUntil = now + ms + 9000; }
     else if (u < o.turn + o.ann + o.phone) { const x = { mainConnectionID: 800 + c.id, sourceID: 70, sinkID: 1024, connectionState: 2 }; c.conns.push(x); await advance(20000); if (!r.ducked && c.own() && c.dead < now - 12000) fail(name + ': Telefon senkt nicht ab | duckBusy ' + r.duckBusy + ' conn ' + JSON.stringify(r.conn)); c.conns = c.conns.filter((y) => y !== x); await advance(6000); if (r.ducked && c.own()) fail(name + ': bleibt abgesenkt'); quietUntil = now + 9000; }
     else if (u < o.turn + o.ann + o.phone + o.dead) { c.dead = now + 3000 + rnd() * 40000; if (rnd() < 0.5) c.conns = c.conns.filter((y) => y.sourceID !== 1048); quietUntil = c.dead + 25000; }
-    else if (rnd() < o.clock) { const d = (rnd() - 0.5) * 7200000; now += 0; q.forEach((x) => { x.t += d; }); now += d; c.ann += d; c.dead += d; quietUntil += d; if (c.conns.length > 3) c.conns = c.conns.filter((y) => y.sourceID === 1 || y.sourceID === 1048); if (now > end + 1e7) break; quietUntil = Math.max(quietUntil, now + 20000); }
+    else if (rnd() < o.clock) { const d = (rnd() - 0.5) * 7200000; Date.now = () => realNow() + d; }   // nur die Uhrzeit springt
     else if (rnd() < o.off) { r.want('overlay', false); await advance(8000); if (c.own() && c.dead < now - 12000) fail(name + ': nicht getrennt, obwohl aus | orph ' + r.orphans + ' conn ' + JSON.stringify(r.conn) + ' own ' + JSON.stringify(c.own()) + ' | ' + msgs.slice(-4).join(' / ')); r.want('overlay', true); quietUntil = now + 12000; }
     if (c.dead + 30000 > quietUntil) quietUntil = Math.max(quietUntil, c.dead + 30000);
     await advance(1000);

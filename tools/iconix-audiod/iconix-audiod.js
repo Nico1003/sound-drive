@@ -26,12 +26,13 @@
  */
 const fs = require('fs');
 const net = require('net');
+const cp = require('child_process');
 const path = require('path');
 const Synth = require('./synth');
 const Profiles = require('./profiles');
 const E = require('./engine');
 
-const VERSION = '1.0.7';
+const VERSION = '1.0.8';
 const SOCKETS = process.env.ICONIX_AUDIOD_SOCKET
   ? [process.env.ICONIX_AUDIOD_SOCKET]
   : ['/run/iconix-audiod/audiod.sock', '/tmp/iconix-audiod.sock'];
@@ -59,7 +60,7 @@ function runDaemon() {
   process.env.ICONIX_RT_PARENT = '1';
   const clients = new Set();
   const servers = [];
-  let lastLine = '', lastSent = 0;
+  let lastLine = '', lastSent = 0, diagBusy = false;
 
   const engine = new E.Engine({ log: log, onStatus: function () { broadcast(false); } });
 
@@ -71,7 +72,7 @@ function runDaemon() {
   }
   function broadcast(onlyIfChanged) {
     const line = JSON.stringify(status()) + '\n';
-    const now = Date.now();
+    const now = E.clock.now();
     if (onlyIfChanged && line.replace(/"at":\d+,?/, '') === lastLine.replace(/"at":\d+,?/, '') && now - lastSent < 5000) return;
     lastLine = line; lastSent = now;
     clients.forEach(function (c) { try { c.write(line); } catch (e) { /* egal */ } });
@@ -80,7 +81,7 @@ function runDaemon() {
   let lastFile = '', lastFileAt = 0;
   function writeStatusFile() {
     try {
-      const st = status(), cmp = JSON.stringify(Object.assign({}, st, { at: 0 })), now = Date.now();
+      const st = status(), cmp = JSON.stringify(Object.assign({}, st, { at: 0 })), now = E.clock.now();
       if (cmp === lastFile && now - lastFileAt < 5000) return;
       lastFile = cmp; lastFileAt = now;
       const tmp = STATUS_FILE + '.tmp';
@@ -99,21 +100,26 @@ function runDaemon() {
     else if (m.op === 'testdevices') { log('Gerätetest'); engine.testDevices(); }
     else if (m.op === 'hello') log('App verbunden: ' + m.id + ' ' + m.version);
     else if (m.op === 'diag') {
-      // ALSA-Geräte erst jetzt prüfen (beim ersten Öffnen der Diagnose); das Ergebnis kommt mit dem nächsten Status
-      if (!engine.scan && !engine.scanning) { engine.scanning = true; engine.scanDevices(function () { engine.scanning = false; broadcast(false); }); }
+      if (diagBusy) return;
+      diagBusy = true;
+      // In einem eigenen Prozess: Das Durchsuchen von /proc und der Konfigurationen dauert auf dem Head Unit über 300 ms –
+      // im Dienst selbst setzte der Ton so lange aus.
+      cp.execFile(process.execPath, [__filename, '--diag-json'], { timeout: 20000, maxBuffer: 1 << 23 }, function (e, stdout) {
+      diagBusy = false;
       let lines;
       try {
-        const sx = E.probeSmartx();
+        const x = JSON.parse(stdout), sx = x.smartx, r = x.audio, eps = x.endpoints;
         engine.smartx = sx;
         log('SmartX: ' + JSON.stringify(sx));
-        const r = E.probeAudio();
         log('Diagnose: ' + JSON.stringify(r));
-        const eps = E.smartxEndpoints();
         lines = ['--- Ausgabe ---', 'Gerät: ' + engine.device + ' -> ' + engine.status().resolved,
           'SmartX-Kanäle (Wiedergabe): ' + (eps.length ? eps.join(', ') : 'keine in /dev/shm')].concat(E.smartxLines(sx)).concat(['--- Allgemein (root) ---'], E.diagLines(r, []));
-      } catch (e) { lines = ['Diagnose fehlgeschlagen: ' + e.message]; }
+      } catch (x) { lines = ['Diagnose fehlgeschlagen: ' + (e && e.message || x.message)]; }
       const msg = JSON.stringify({ op: 'diag', lines: lines }) + '\n';
-      clients.forEach(function (c) { try { c.write(msg); } catch (e) { /* egal */ } });
+      clients.forEach(function (c) { try { c.write(msg); } catch (x) { /* egal */ } });
+      // ALSA-Geräte erst jetzt prüfen (beim ersten Öffnen der Diagnose); das Ergebnis kommt mit dem nächsten Status
+      if (!engine.scan && !engine.scanning) { engine.scanning = true; engine.scanDevices(function () { engine.scanning = false; broadcast(false); }); }
+      });
     }
   }
 
@@ -228,6 +234,8 @@ if (require.main === module) {
   if (process.argv.indexOf('--probe') >= 0) {
     const list = E.candidates();
     console.log(list.length ? list.map(function (b) { return b.name + '  ' + b.path + ' ' + b.argv.join(' '); }).join('\n') : 'Kein Abspielprogramm gefunden.');
+  } else if (process.argv.indexOf('--diag-json') >= 0) {
+    process.stdout.write(JSON.stringify({ smartx: E.probeSmartx(), audio: E.probeAudio(), endpoints: E.smartxEndpoints() }));
   } else if (process.argv.indexOf('--wav') >= 0) {
     renderWav(arg('--wav', 'iconix.wav'));
   } else if (process.argv.indexOf('--play-test') >= 0) {

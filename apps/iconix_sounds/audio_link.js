@@ -16,6 +16,7 @@
 const fs = require('fs');
 const net = require('net');
 const EventEmitter = require('events');
+const Clock = require('./clock');
 
 const SOCKETS = process.env.ICONIX_AUDIOD_SOCKET
   ? [process.env.ICONIX_AUDIOD_SOCKET]
@@ -52,7 +53,7 @@ class AudioLink extends EventEmitter {
     this.closed = false;
     this.pathIndex = 0;
     this.errors = {};        // Pfad -> letzter Fehlercode (ENOENT, EACCES, ECONNREFUSED, ...)
-    this.startedAt = Date.now();
+    this.startedAt = Clock.now();
     this.local = null;       // Engine im App-Prozess (Rückfall)
     this.localStatus = null;
     this.daemonStatus = null;
@@ -171,13 +172,12 @@ class AudioLink extends EventEmitter {
     }
     let r;
     try { r = E.probeAudio({ someip: !this.connected }); } catch (e) { return lines.concat(['Diagnose (App) fehlgeschlagen: ' + e.message]); }
-    try { this.log.info('iconix: Audio-Diagnose (App) ' + JSON.stringify(r)); } catch (e) { /* egal */ }
     return lines.concat(E.diagLines(r, ['--- Sicht der App ---']));
   }
 
   _tick() {
     const p = this.latest;
-    const now = Date.now();
+    const now = Clock.now();
     // Rückfall starten, wenn der Dienst zu lange fehlt
     if (!this.connected && !this.local && this.fallback && now - this.startedAt > FALLBACK_MS) this._startLocal();
     if (!p || (now - p.at > STALE_MS && !(p.rpm < 100 && now - p.at < OFF_KEEP_MS))) return;
@@ -224,7 +224,7 @@ class AudioLink extends EventEmitter {
     let running = false;
     try {
       const st = JSON.parse(fs.readFileSync(STATUS_FILE, 'utf8'));
-      running = st && Date.now() - (st.at || 0) < 10000;
+      running = st && Math.abs(Date.now() - (st.at || 0)) < 10000;   // Wanduhr: die Datei schreibt ein anderer Prozess
     } catch (e) { running = false; }
     if (running) return 'Dienst läuft, Socket nicht erreichbar (' + (codes[0] || '?') + ')';
     if (codes.length && codes.every(c => c === 'ENOENT')) return 'Dienst läuft nicht – Tool "Sound Drive Audio" installiert?';
@@ -234,18 +234,35 @@ class AudioLink extends EventEmitter {
   _onMessage(line) {
     let m;
     try { m = JSON.parse(line); } catch (e) { return; }
-    if (m.op === 'diag' && Array.isArray(m.lines)) { this.daemonDiag = m.lines; this.emit('diag', m.lines); return; }
+    if (m.op === 'diag' && Array.isArray(m.lines)) {
+      this.daemonDiag = m.lines;
+      // Tonkanäle des Autos ins Log (nur in der Diagnose, je App-Start einmal)
+      const i = m.lines.findIndex(l => /^SmartX-Kanäle/.test(l));
+      if (i >= 0 && !this.loggedChannels) { this.loggedChannels = true; AudioLink.logLong(this.log, m.lines[i]); }
+      this.emit('diag', m.lines);
+      return;
+    }
     if (m.op !== 'status') return;
     // neue Aussetzer ins Log der App (höchstens alle 30 s), damit sie im QR-Log mit Uhrzeit stehen
-    const u = m.underruns || 0, now = Date.now();
+    const u = m.underruns || 0, now = Clock.now();
     if (u < (this.logDrops || 0)) this.logDrops = u;       // Dienst neu gestartet
     if (u > (this.logDrops || 0) && now - (this.logDropsAt || 0) > 30000) {
-      this.log.info('iconix: Aussetzer ' + u + ' (+' + (u - (this.logDrops || 0)) + '), Vorlauf ' + m.leadMs + ' ms, ALSA-Puffer ' + (m.bufMs || '?') +
+      this.log.info('iconix: Aussetzer ' + u + ' (+' + (u - (this.logDrops || 0)) + '; davon Player zu spät ' + (m.xruns || 0) + '), Vorlauf ' + m.leadMs + ' ms, ALSA-Puffer ' + (m.bufMs || '?') + '/' + (m.perMs || '?') +
         ' ms, Echtzeit ' + (m.rt || '?') + ', verspätet ' + (m.late || 0) + ', längste Pause ' + (m.gapMs || 0) + ' ms');
       this.logDrops = u; this.logDropsAt = now;
     }
     this.daemonStatus = m;
     this._update();
+  }
+
+  /** Lange Aufzählung (", "-getrennt) in Zeilen unter 230 Zeichen ins Log: Das QR-Log schneidet nach 300 ab. */
+  static logLong(log, text) {
+    let line = '';
+    String(text).split(', ').forEach(x => {
+      if (line && line.length + x.length > 220) { log.info('iconix: ' + line + ','); line = '…'; }
+      line += (line === '' ? '' : line === '…' ? ' ' : ', ') + x;
+    });
+    if (line) log.info('iconix: ' + line);
   }
 
   _describe(m, prefix) {
@@ -264,7 +281,7 @@ class AudioLink extends EventEmitter {
     if (this.connected) st = this.daemonStatus ? this._describe(this.daemonStatus, 'Audio: ') : { ok: true, text: 'Audio-Dienst verbunden' };
     else if (this.local && this.localStatus) st = this._describe(this.localStatus, 'Audio (App): ');
     else if (this.localStatus && this.localStatus.error) st = { ok: false, text: this.localStatus.error };
-    else if (Date.now() - this.startedAt < FALLBACK_MS) st = { ok: false, text: 'Audio: verbinde …' };
+    else if (Clock.now() - this.startedAt < FALLBACK_MS) st = { ok: false, text: 'Audio: verbinde …' };
     else st = { ok: false, text: 'Audio-Dienst: ' + this._why() };
     st.mode = this.connected ? 'daemon' : (this.local ? 'app' : 'none');
     if (st.text !== this.status.text || st.ok !== this.status.ok) {

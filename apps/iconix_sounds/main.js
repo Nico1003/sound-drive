@@ -25,8 +25,9 @@ const UI = require('./ui');
 const AudioLink = require('./audio_link');
 const VehicleFeed = require('./vehicle_feed');
 const CarRoute = require('./car_route');
+const Clock = require('./clock');
 
-const VERSION = '1.0.7';
+const VERSION = '1.0.8';
 // eigener Reiter "Sound" neben "Settings" im Kopf des Kits (führt aus den Einstellungen zurück)
 const TAB_INFO = { tabs: ['Sound'], sel: 0, badges: [] };
 // Audiomanager-Verbindung: Sie braucht im Auto ~6 s, bis sie hörbar ist (CS_CONNECTED). Darum wird sie schon beim
@@ -119,7 +120,7 @@ function startCore(host) {
   mark('app', 'App (' + String((host.app && host.app.startReason) || '?') + ')');
 
   feed.on('sample', s => {
-    const now = Date.now();
+    const now = Clock.now();
     if (!lastData) mark('data', 'erste Drehzahl (' + Math.round(s.rpm) + ')');
     // Aufwachen (erste Daten nach Schlaf/Start) oder laufender Motor halten den Tonweg bereit
     if (now - lastData > WAKE_GAP_MS || s.rpm > 300) lastActivity = now;
@@ -143,7 +144,7 @@ function startCore(host) {
   route.onChange = audible => { if (held === !audible) return; held = !audible; synthCfgCache.hold = held; link.configure(synthCfgCache); };
   setInterval(() => {
     const ds = link.connected ? link.daemonStatus : (link.local ? link.localStatus : null);
-    const now = Date.now();
+    const now = Clock.now();
     if (link.connected) mark('daemon', 'Audio-Dienst verbunden');
     if (route.audible()) mark('route', 'Tonweg hörbar');
     if (ds && ds.playing) mark('play', 'Ton läuft' + (ds.openMs > 3000 ? ' (Kanal öffnete erst nach ' + Math.round(ds.openMs / 1000) + ' s)' : ''));
@@ -163,7 +164,7 @@ function startCore(host) {
   log.info('iconix: Kern gestartet, Version ' + VERSION + ', Tonweg ' + synthCfgCache.route);
 
   // Testsound: Tonweg sofort bereitstellen; ist er noch nicht hörbar (verbindet ~6 s), startet der Test, sobald er es ist
-  const test = () => { lastActivity = Date.now(); if (route.audible()) link.test(); else pendingTest = Date.now(); };
+  const test = () => { lastActivity = Clock.now(); if (route.audible()) link.test(); else pendingTest = Clock.now(); };
   // Regler ziehen: Lautstärke sofort hören und sehen, ohne bei jedem Schritt die Einstellungsdatei zu schreiben
   const previewVolume = v => {
     if (v === volPreview) return;
@@ -357,7 +358,7 @@ mgu.run({
           if (diag) return false;
           const f = UI.volAt(x, y, c.ui().wide);
           if (f < 0) return false;
-          volDrag = { t: Date.now(), f, timer: null };
+          volDrag = { t: Clock.now(), f, timer: null };
           armDrag();
           c.previewVolume(volOf(f));
           return true;
@@ -366,7 +367,7 @@ mgu.run({
         volDrag.f = UI.volAt(x, y, c.ui().wide, true);
         if (phase === 3) { endDrag(); return true; }
         armDrag();
-        if (Date.now() - volDrag.t >= 60) { volDrag.t = Date.now(); c.previewVolume(volOf(volDrag.f)); }
+        if (Clock.now() - volDrag.t >= 60) { volDrag.t = Clock.now(); c.previewVolume(volOf(volDrag.f)); }
         return true;
       });
     }
@@ -391,7 +392,7 @@ mgu.run({
     ctx.loop('MAIN', 20, () => {
       const s = c.last();
       const cfg = c.synthCfg();
-      const a = audioStatus(c), now = Date.now();
+      const a = audioStatus(c), now = Clock.now();
       const key = cfg.profile + '|' + cfg.enabled + '|' + cfg.volume + '|' + cfg.sport + '|' + cfg.mode + '|' + c.ui().wide + '|' + cfg.carRedline + '|' +
         (s ? Math.round(s.rpm / 10) : '-') + '|' + Math.round(c.speed()) + '|' + a.text + '|' + a.ok + '|' +
         (diag ? diag.page + ':' + diag.lines.length : '');

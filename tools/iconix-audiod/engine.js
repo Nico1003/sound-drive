@@ -17,6 +17,10 @@ const path = require('path');
 const cp = require('child_process');
 const Synth = require('./synth');
 
+// Uhr für Abstände und Fristen: läuft gleichmäßig weiter, auch wenn das Head Unit die Uhrzeit stellt (sonst gälten die
+// Fahrdaten bei einem Sprung als veraltet und der Ton setzte kurz aus). Startwert beliebig, aber groß (0 heißt "nie").
+const clock = { now: function () { const t = process.hrtime(); return 1e9 + t[0] * 1000 + Math.floor(t[1] / 1e6); } };
+
 // Synthese-Rate: 48 kHz wie die SmartX-Kanäle des Head Units (24-kHz-Kanäle bekommen je 2 Frames gemittelt)
 const RATE = Number(process.env.ICONIX_RATE) || 48000;
 const TICK_MS = 10;          // 100 Wakeups/s, solange Ton läuft – kleine Blöcke erlauben knappen Vorlauf
@@ -240,7 +244,7 @@ function Output(onState, log, opts) {
   this.child = null;
   this.backend = null;
   this.blocked = false;
-  this.underruns = 0;
+  this.underruns = 0; this.xruns = 0; this.perMs = null;
   this.error = this.list.length ? null : (isSmartx(this.opts.device) ? 'Python/alsa_play.py fehlt für SmartX' : 'kein Abspielprogramm gefunden – siehe Audio-Diagnose');
   this.lastErr = '';
   this.fmt = { rate: RATE, ch: 2 };
@@ -265,7 +269,7 @@ Output.prototype.start = function () {
     this.bad[b.name] = true; this.lastErr = e.message; this.onState();
     return false;
   }
-  const startedAt = Date.now();
+  const startedAt = clock.now();
   this.child = child;
   this.backend = b.name;
   this.fmt = b.fmt || { rate: RATE, ch: 2 };
@@ -295,11 +299,12 @@ Output.prototype.start = function () {
     // aplay meldet Aussetzer als "underrun!!! (at least X ms long)" – zählen statt als Fehler werten
     if (/underrun|xrun/i.test(line)) {
       self.underruns++;
+      if (!/Stille nachgelegt/.test(line)) self.xruns++;   // Puffer der Soundkarte leer (Player kam zu spät), sonst fehlte Nachschub
       if (self.underruns <= 5 || self.underruns % 50 === 0) log(b.name + ': ' + line + ' (#' + self.underruns + ')');
       return;
     }
     const mb = /Puffer (\d+) ms/.exec(line);
-    if (mb) { if (self.child === child) self._open(); self.bufMs = Number(mb[1]); const mr = /Echtzeit (.*)$/.exec(line); self.rt = mr ? mr[1] : null; log(b.name + ': ' + line); return; }
+    if (mb) { if (self.child === child) self._open(); const mp = /Periode (\d+) ms/.exec(line); self.perMs = mp ? Number(mp[1]) : null; self.bufMs = Number(mb[1]); const mr = /Echtzeit (.*)$/.exec(line); self.rt = mr ? mr[1] : null; log(b.name + ': ' + line); return; }
     self.lastErr = line.slice(0, 120); log(b.name + ': ' + line);
   });
   child.stdin.on('error', function () { /* EPIPE -> exit folgt */ });
@@ -312,7 +317,7 @@ Output.prototype.start = function () {
     if (self.child === child) {
       self.child = null;
       self.backend = null;
-      if (!self.stopping && Date.now() - startedAt < 3000) {
+      if (!self.stopping && clock.now() - startedAt < 3000) {
         self.bad[b.name] = true; // startet nicht -> nächstes Programm probieren
         self.error = b.name + ' fehlgeschlagen' + (self.lastErr ? ': ' + self.lastErr : '');
       }
@@ -327,7 +332,7 @@ Output.prototype.start = function () {
 /** Kanal ist offen: merken, wie lange es gedauert hat. */
 Output.prototype._open = function () {
   if (this.opened) return;
-  this.opened = true; this.openedAt = Date.now(); this.openMs = this.openedAt - this.startedAt;
+  this.opened = true; this.openedAt = clock.now(); this.openMs = this.openedAt - this.startedAt;
   if (this.openMs > 3000) this.log(this.backend + ': Kanal öffnete erst nach ' + this.openMs + ' ms');
   this.onState();
 };
@@ -449,7 +454,7 @@ function Engine(opts) {
   this.testUntil = 0; this.testStart = 0;
   this.silentSince = 0;
   this.t0 = 0; this.written = 0;
-  this.lastTick = Date.now(); this.late = 0; this.gapMs = 0;   // verspätete Takte, längste Pause zwischen zwei Takten
+  this.lastTick = clock.now(); this.late = 0; this.gapMs = 0;   // verspätete Takte, längste Pause zwischen zwei Takten
   this.fbFloor = FB_LEAD_MS; this.fbFloorAt = 0;
   this.f32 = new Float32Array(MAX_CHUNK * 2);
   this.timer = null;
@@ -484,7 +489,7 @@ Engine.prototype.setDevice = function (d) {
   this.device = d || 'auto';
   const old = this.out;
   this.out = new Output(function () { self._changed(); }, this.log, { device: this._resolve(this.device) });
-  this.out.underruns = old.underruns || 0;
+  this.out.underruns = old.underruns || 0; this.out.xruns = old.xruns || 0;
   old.stop();
   this.log('Ausgabegerät: ' + this.device + ' -> ' + this._resolve(this.device));
   this._changed();
@@ -492,9 +497,9 @@ Engine.prototype.setDevice = function (d) {
 
 Engine.prototype.scanDevices = function (cb) {
   const self = this;
-  let sx = null;
-  try { sx = probeSmartx(); } catch (e) { sx = null; }
-  this.smartx = sx;
+  // schon von der Diagnose ermittelt (eigener Prozess)? sonst hier – das dauert und unterbricht kurz den Ton
+  let sx = this.smartx || null;
+  if (!sx) { try { sx = probeSmartx(); } catch (e) { sx = null; } this.smartx = sx; }
   const extra = sx ? sx.pcmNames : [];
   // Durchläufe: normale ALSA-Konfiguration, dann jede ALSA_CONFIG_PATH der BMW-Audio-Prozesse
   const runs = [null].concat(sx ? sx.alsaConfigEnv : []);
@@ -546,13 +551,13 @@ Engine.prototype._nextTestDevice = function () {
     return;
   }
   this.setDevice(t.list[t.i]);
-  this.testStart = Date.now(); this.testUntil = this.testStart + 4000;
+  this.testStart = clock.now(); this.testUntil = this.testStart + 4000;
   t.until = this.testUntil;
   this._changed();
 };
-Engine.prototype.params = function (p) { this.synth.setParams(p); this.lastParams = Date.now(); this.wake(); };
+Engine.prototype.params = function (p) { this.synth.setParams(p); this.lastParams = clock.now(); this.wake(); };
 Engine.prototype.test = function () {
-  this.testStart = Date.now(); this.testUntil = this.testStart + 9000;
+  this.testStart = clock.now(); this.testUntil = this.testStart + 9000;
   // nach einem Fehler beim Testsound alle Abspielprogramme erneut probieren
   this.out.bad = {};
   this.out.list = candidates({ device: this._resolve(this.device) });
@@ -567,7 +572,7 @@ Engine.prototype.status = function () {
     ok: !out.error,
     backend: out.backend || (out.list[0] && !out.error ? out.list[0].name : null),
     rate: RATE, playing: !!out.child && out.opened !== false, opening: !!out.child && out.opened === false, openMs: out.openMs, error: out.error, profile: this.synth.pending || this.synth.cfg.profile,
-    underruns: out.underruns || 0, late: this.late, gapMs: this.gapMs, bufMs: out.child ? out.bufMs || null : null, rt: out.child ? out.rt || null : null, ducked: !!this.synth.cfg.duck, leadMs: out.played != null && out.child ? (this.fbLead || FB_LEAD_MS) : LEAD_MS,
+    underruns: out.underruns || 0, xruns: out.xruns || 0, perMs: out.child ? out.perMs : null, late: this.late, gapMs: this.gapMs, bufMs: out.child ? out.bufMs || null : null, rt: out.child ? out.rt || null : null, ducked: !!this.synth.cfg.duck, leadMs: out.played != null && out.child ? (this.fbLead || FB_LEAD_MS) : LEAD_MS,
     players: out.list.map(function (b) { return b.name; }),
     device: this.device, resolved: out.opts.device, python: findPython(),
     wants: !!this.wantSound, outRate: out.fmt.rate, outCh: out.fmt.ch,
@@ -582,13 +587,13 @@ Engine.prototype._changed = function () { try { this.onStatus(this.status()); } 
 Engine.prototype.start = function () {
   if (this.timer || this.running) return;
   this.running = true;
-  this.lastTick = Date.now();
+  this.lastTick = clock.now();
   this._loop();
 };
 
 // Taktgeber: 10 ms, solange Ton läuft oder gewünscht ist, sonst 200 ms (spart im Stand/ohne Daten fast alles)
 Engine.prototype._busy = function () {
-  return !!(this.out.child || this.wantSound || this.devTest || Date.now() < this.testUntil);
+  return !!(this.out.child || this.wantSound || this.devTest || clock.now() < this.testUntil);
 };
 Engine.prototype._loop = function () {
   const self = this;
@@ -611,7 +616,7 @@ Engine.prototype.stop = function () {
 };
 
 Engine.prototype._tick = function () {
-  const now = Date.now(), synth = this.synth, out = this.out;
+  const now = clock.now(), synth = this.synth, out = this.out;
   // zählt Wakeups, die so spät kamen, dass der Vorlauf aufgebraucht war
   if (out.child && this.ticking) this.gapMs = Math.max(this.gapMs, now - this.lastTick);
   this.ticking = !!out.child;
@@ -915,6 +920,7 @@ function diagLines(r, extra) {
 }
 
 module.exports = {
+  clock: clock,
   probeAudio: probeAudio, diagLines: diagLines, scanAlsa: scanAlsa, findPython: findPython,
   probeSmartx: probeSmartx, smartxLines: smartxLines, usable: usable,
   Engine: Engine, Output: Output, candidates: candidates, toPcm: toPcm, toPcmFmt: toPcmFmt, Decimator: Decimator, sweepAt: sweepAt,

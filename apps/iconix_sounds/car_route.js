@@ -20,6 +20,8 @@
  */
 const fs = require('fs');
 const path = require('path');
+const Clock = require('./clock');
+const AudioLink = require('./audio_link');
 
 const AM = 'org.genivi.am.commandinterface.CommandControl';
 const AMR = 'org.genivi.am.routinginterface.RoutingControlObserver';
@@ -119,7 +121,7 @@ class CarRoute {
     this.knobSig = null; this.knobQuiet = 0; this.knobIgnored = 0; this.knobTurns = 0; this.knobWake = null; this.knobReadAt = 0;
     this.others = null; this.othersAt = 0;   // andere aktive Verbindungen (Musik, Ansagen) und wann sie sich änderten
     this.warned = null; this.warnedAt = 0;
-    this.lastNow = 0; this.stopped = false; this.unavail = 0;
+    this.stopped = false; this.unavail = 0;
     this.orphans = []; this.sweepAt = 0;     // Verbindungen, deren Trennen fehlschlug (Nummern)
     this.onChange = null;       // fn(): hörbar/gehalten hat sich geändert (die App schaltet den Ton weich)
     this.lastAudible = null;
@@ -148,17 +150,11 @@ class CarRoute {
     return this.conn && this.am ? this._disconnect().catch(() => {}).then(() => again(3)) : again(3);
   }
 
-  /** Uhr zurückgestellt (Head Unit gleicht nach dem Start die Zeit ab): gemerkte Zeitpunkte lägen in der Zukunft. */
-  _clock(now) {
-    if (now < this.lastNow - 2000) { this.nextTry = 0; this.lastVerify = 0; this.lastDuck = 0; this.knobAt = 0; this.knobQuiet = 0; this.othersAt = 0; this.srcAt = 0; this.warnedAt = 0; }
-    this.lastNow = now;
-  }
-
   /** Lautstärkeknopf der Musik überlassen an/aus (Einstellung). */
   setKnob(on) { this.knobOn = !!on; if (!on) this.knobAt = 0; }
 
   /** Gerade gedreht (oder vor < KNOB_REST_MS): Motorsound macht Platz. */
-  knobHeld() { return this.knobOn && this.knobAt > 0 && Date.now() - this.knobAt < KNOB_REST_MS; }
+  knobHeld() { return this.knobOn && this.knobAt > 0 && Clock.now() - this.knobAt < KNOB_REST_MS; }
 
   /**
    * Hört man unseren Kanal gerade? Wege ohne Audiomanager immer; sonst nur mit bestehender Verbindung, die
@@ -167,7 +163,7 @@ class CarRoute {
   audible() {
     if (!this.needsAm()) return true;
     if (!this.conn || this.knobHeld()) return false;
-    return this.connState === 'CS_CONNECTED' || Date.now() - (this.conn.at || 0) > AUDIBLE_AFTER_MS;
+    return this.connState === 'CS_CONNECTED' || Clock.now() - (this.conn.at || 0) > AUDIBLE_AFTER_MS;
   }
 
   _changed() {
@@ -188,7 +184,7 @@ class CarRoute {
       const v = s1 ? Number(s1.volume) : NaN;
       this.knobErr = s1 ? null : 'Haupt-Senke 1 fehlt';
       // eigener Verbindungswechsel (verbunden, Zustand, getrennt)? dann eine Weile nur beobachten
-      const now = Date.now(), sig = this.conn ? this.conn.id + ':' + this.connState : '-';
+      const now = Clock.now(), sig = this.conn ? this.conn.id + ':' + this.connState : '-';
       if (sig !== this.knobSig) { this.knobSig = sig; this.knobQuiet = now + KNOB_SETTLE_MS; }
       // Als Knopfdreh zählt eine Änderung
       //  - während der Pause immer (weiter gedreht verlängert sie; auch während der Beruhigung nach unserem Trennen –
@@ -209,7 +205,7 @@ class CarRoute {
         if (moved && !hand) this.knobIgnored++;
         if (hand) {
           const was = this.knobHeld();
-          this.knobAt = Date.now();
+          this.knobAt = Clock.now();
           // genau nach der Ruhezeit weitermachen, nicht erst mit dem nächsten Takt
           if (this.timer) {
             if (this.knobWake) clearTimeout(this.knobWake);
@@ -233,7 +229,7 @@ class CarRoute {
     const sig = list.filter((c) => c.source !== own && (!c.state || c.state === 'CS_CONNECTED' || c.state === 'CS_CONNECTING'))
       .map((c) => c.source).sort((a, b) => a - b).join(',');
     const changed = this.others !== null && sig !== this.others;
-    if (changed) this.othersAt = Date.now();
+    if (changed) this.othersAt = Clock.now();
     this.others = sig;
     return changed;
   }
@@ -242,7 +238,7 @@ class CarRoute {
   async _byHand(step) {
     if (step > KNOB_STEP_MAX) return false;
     try { if (this._noteOthers(await this._connections())) return false; } catch (e) { /* Liste nicht lesbar: nach der Größe */ }
-    return Date.now() - this.othersAt > KNOB_OTHERS_MS;
+    return Clock.now() - this.othersAt > KNOB_OTHERS_MS;
   }
 
   /** Gewünschten Weg und ob gerade Ton gebraucht wird setzen; die Steuerung folgt im nächsten Takt. */
@@ -261,7 +257,7 @@ class CarRoute {
   /** Andere aktive Verbindungen prüfen: Telefon, Navi-Ansage, Parkpiepser ... -> ducked. */
   async _pollDuck() {
     if (this.duckBusy) return;
-    this.duckBusy = true; this.lastDuck = Date.now();
+    this.duckBusy = true; this.lastDuck = Clock.now();
     try {
       if (!(await this._proxies())) return;
       const c0 = this.conn;      // vor der Abfrage merken: wird inzwischen neu verbunden, gilt die Liste dafür nicht
@@ -280,12 +276,12 @@ class CarRoute {
       const own = this.conn ? this.conn.source : null;
       const active = list.filter((c) => c.source !== own && (!c.state || c.state === 'CS_CONNECTED' || c.state === 'CS_CONNECTING'));
       // Namen der Quellen nachladen, wenn eine unbekannt ist (höchstens alle 30 s)
-      if (active.some((c) => !(c.source in this.srcNames)) && Date.now() - this.srcAt > 30000) {
-        this.srcAt = Date.now();
+      if (active.some((c) => !(c.source in this.srcNames)) && Clock.now() - this.srcAt > 30000) {
+        this.srcAt = Clock.now();
         try {
           const src = listOf(await this._call(this.am, 'getListMainSources', {}, 3000), ['listMainSources']);
           src.forEach((x) => { this.srcNames[x.sourceID] = String(x.name || ''); });
-        } catch (e) { this.srcAt = Date.now() - 27000; /* in 3 s noch einmal: ohne Namen kein Absenken */ }
+        } catch (e) { this.srcAt = Clock.now() - 27000; /* in 3 s noch einmal: ohne Namen kein Absenken */ }
       }
       const hit = active.filter((c) => CarRoute.duckName(this.srcNames[c.source]))[0];
       const by = hit ? this.srcNames[hit.source] + ' (' + hit.source + ')' : null;
@@ -381,8 +377,7 @@ class CarRoute {
 
   async _step() {
     if (this.stopped) return;
-    const now = Date.now();
-    this._clock(now);
+    const now = Clock.now();
     if ((this.duckOn || this.knobOn) && this.conn && now - this.lastDuck >= DUCK_POLL_MS) this._pollDuck();
     else if (!this.wanted && this.ducked) { this.ducked = false; this.duckBy = null; }
     if (this.busy) return;
@@ -412,7 +407,7 @@ class CarRoute {
     } catch (e) {
       this.lastError = String(e && e.message || e).slice(0, 80);
       this.state = 'Fehler';
-      this.nextTry = Date.now() + RETRY_MS;
+      this.nextTry = Clock.now() + RETRY_MS;
       // während einer Ansage lehnt das Auto jeden Versuch ab: dieselbe Meldung nur alle 15 s ins Log
       if (this.lastError !== this.warned || now - this.warnedAt > 15000) { this.warned = this.lastError; this.warnedAt = now; this.log.warn('iconix: Audiomanager: ' + this.lastError); }
     } finally {
@@ -429,9 +424,9 @@ class CarRoute {
     for (let i = 0; i < same.length; i++) {
       if (same[i].sink === r.sink) {
         // besteht schon (z. B. von einem früheren Lauf): übernehmen
-        this.conn = { id: same[i].id, routeId: id, source: r.source, sink: r.sink, at: Date.now() - (same[i].state === 'CS_CONNECTING' ? 0 : AUDIBLE_AFTER_MS) };
+        this.conn = { id: same[i].id, routeId: id, source: r.source, sink: r.sink, at: Clock.now() - (same[i].state === 'CS_CONNECTING' ? 0 : AUDIBLE_AFTER_MS) };
         this.connState = same[i].state;
-        this.state = 'verbunden'; this.lastError = null; this.lastVerify = Date.now();
+        this.state = 'verbunden'; this.lastError = null; this.lastVerify = Clock.now();
         this._save(); this._changed();
         this.log.info('iconix: AM-Verbindung ' + same[i].id + ' (' + r.source + ' -> ' + r.sink + ') übernommen');
         return;
@@ -452,14 +447,14 @@ class CarRoute {
       const hit = (await this._connections()).filter(function (c) { return (cid != null && c.id === cid) || (c.source === r.source && c.sink === r.sink); })[0];
       if (hit) { if (cid == null) cid = hit.id; this.connState = hit.state; }
     } catch (e) { /* egal */ }
-    this.conn = { id: cid, routeId: id, source: r.source, sink: r.sink, at: Date.now() };
-    this.state = 'verbunden'; this.lastError = null; this.lastVerify = Date.now();
+    this.conn = { id: cid, routeId: id, source: r.source, sink: r.sink, at: Clock.now() };
+    this.state = 'verbunden'; this.lastError = null; this.lastVerify = Clock.now();
     this._save(); this._changed();
     this.log.info('iconix: AM verbunden ' + r.source + ' -> ' + r.sink + ' (' + r.label + '), mainConnectionID ' + cid + ', amError ' + errOf(res));
   }
 
   async _verify() {
-    this.lastVerify = Date.now();
+    this.lastVerify = Clock.now();
     let list;
     try { list = await this._connections(); } catch (e) { return; } // Liste nicht lesbar: so lassen
     const c = this.conn;
@@ -510,6 +505,25 @@ class CarRoute {
     }
   }
 
+  /**
+   * Für die Suche nach einer Quelle, die den Lautstärkeknopf nicht übernimmt: Quellen mit Klasse, die Eigenschaften der
+   * Klassen und die Senken ins Log (QR-Log), je App-Start einmal. Nur lesend; fehlende Aufrufe werden übergangen.
+   */
+  async _logCar(src) {
+    if (this.loggedCar) return;
+    this.loggedCar = true;
+    const put = (t) => AudioLink.logLong(this.log, t);
+    const props = (a) => (Array.isArray(a) ? a.map((p) => (p && typeof p === 'object' ? Object.keys(p).map((k) => String(p[k]).replace(/^(CP|SP|MSP)_/, '')).join('=') : String(p))).join(' ') : '');
+    put('AM-Quellen ' + src.map((x) => x.sourceID + ' ' + x.name + (x.sourceClassID !== undefined ? ' K' + x.sourceClassID : '')).join(', '));
+    const each = async (m, key, what, params, fn) => {
+      try { const l = listOf(await this._call(this.am, m, params, 3000), [key]); put(what + ' ' + (l.map(fn).join(', ') || 'keine')); } catch (e) { put(what + ': ' + String(e && e.message || e).slice(0, 120)); }
+    };
+    await each('getListSourceClasses', 'listSourceClasses', 'AM-Klassen', {}, (c) => 'K' + c.sourceClassID + ' ' + c.name + ' [' + props(c.listClassProperties) + ']');
+    await each('getListMainSourceSoundProperties', 'listSourceProperties', 'AM-Eigenschaften unserer Quelle', { sourceID: 1048 }, (p) => props([p]));
+    await each('getListMainSinks', 'listMainSinks', 'AM-Senken', {}, (x) => x.sinkID + ' ' + (x.name || '') + (x.sinkClassID !== undefined ? ' K' + x.sinkClassID : '') + ' vol ' + x.volume);
+    await each('getListMainConnections', 'listConnections', 'AM-Verbindungen', {}, (c) => c.sourceID + '->' + c.sinkID + ' ' + csName(c.connectionState));
+  }
+
   /** Zeilen für die Audio-Diagnose: Weg, Verbindung, Quellen und Senken des Audiomanagers. */
   async diagLines() {
     const r = CarRoute.route(this.routeId);
@@ -528,8 +542,7 @@ class CarRoute {
     try {
       const src = listOf(await this._call(this.am, 'getListMainSources', {}, 3000), ['listMainSources']);
       out.push('Quellen: ' + (fmt(src, 'sourceID') || 'keine'));
-      // mit Klasse ins Log (QR-Log): gibt es eine Quelle, die den Lautstärkeknopf nicht übernimmt?
-      this.log.info('iconix: AM-Quellen ' + src.map(function (x) { return x.sourceID + ' ' + x.name + (x.sourceClassID !== undefined ? ' K' + x.sourceClassID : ''); }).join(', '));
+      await this._logCar(src);
     } catch (e) { out.push('Quellen: ' + e); }
     try {
       const snk = listOf(await this._call(this.am, 'getListMainSinks', {}, 3000), ['listMainSinks']);
