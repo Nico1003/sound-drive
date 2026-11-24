@@ -80,28 +80,19 @@ def err(lib, code):
 def smartx_lock(dev):
     """SmartX legt beim Öffnen /run/smartx/smartx_<Kanal>_p.lock an. Gehört sie root (dieser Dienst), kommen
     BMWs eigene Prozesse (ent_alsa, Gruppe mgu_alsa) nicht mehr an den Kanal und z. B. CarPlay bleibt bis zum
-    Neustart stumm. Daher vorher selbst anlegen: Besitzer ent_alsa, Gruppe mgu_alsa, 0660."""
+    Neustart stumm. Daher vorher selbst anlegen: Besitzer und Gruppe wie der Ordner /run/smartx selbst (das Konto heißt
+    ent_alsaroutingadapters; "ent_alsa" ist nur die von ls gekürzte Anzeige), 0660."""
     i = dev.find('smartx:')
     if i < 0 or not os.path.isdir('/run/smartx'):
         return
     lock = '/run/smartx/smartx_%s_p.lock' % dev[i + 7:]
     try:
-        import grp
-        import pwd
         if not os.path.exists(lock):
             os.close(os.open(lock, os.O_CREAT | os.O_WRONLY, 0o660))
-        uid, gid = -1, -1
-        try:
-            uid = pwd.getpwnam('ent_alsa').pw_uid
-        except KeyError:
-            pass
-        try:
-            gid = grp.getgrnam('mgu_alsa').gr_gid
-        except KeyError:
-            pass
+        own = os.stat('/run/smartx')
         st = os.stat(lock)
-        if (uid != -1 and st.st_uid != uid) or (gid != -1 and st.st_gid != gid):
-            os.chown(lock, uid, gid)
+        if st.st_uid != own.st_uid or st.st_gid != own.st_gid:
+            os.chown(lock, own.st_uid, own.st_gid)
         os.chmod(lock, 0o660)
     except Exception as e:
         sys.stderr.write('alsa_play: lock %s: %s\n' % (lock, e))
@@ -193,6 +184,12 @@ def realtime_parent():
         os.sched_setscheduler(pid, os.SCHED_RR | os.SCHED_RESET_ON_FORK, os.sched_param(2))
         return 'ja'
     except Exception as e:
+        # ohne Echtzeit wenigstens vor den anderen normalen Prozessen (Player und Dienst)
+        for p in (0, pid):
+            try:
+                os.setpriority(os.PRIO_PROCESS, p, -10)
+            except Exception:
+                pass
         return 'nein (%s)' % (getattr(e, 'strerror', None) or e.__class__.__name__)
 
 
@@ -391,6 +388,12 @@ def cmd_play(dev, rate, latency_us=200000, channels=2):
     except (BrokenPipeError, KeyboardInterrupt):
         pass
     finally:
+        if rp == 'ja':
+            # kein Ton mehr: der Dienst läuft wieder wie jeder andere
+            try:
+                os.sched_setscheduler(os.getppid(), os.SCHED_OTHER, os.sched_param(0))
+            except Exception:
+                pass
         lib.snd_pcm_close(h)
     return 0
 

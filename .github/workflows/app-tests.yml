@@ -32,6 +32,8 @@ jobs:
       - run: node kit/tools/test_runtime.js
       - run: node kit/tools/test_drive_coach.js
       - run: node kit/tools/test_iconix_route.js
+      - run: node kit/tools/test_autostart.js
+      - run: node kit/tools/test_iconix_chaos.js
       - run: python3 kit/tools/test_alsa_play.py
       - name: Ende-zu-Ende (Dienst + Player als Kindprozess)
         run: ICONIX_PYTHON=python3 node kit/tools/test_engine_e2e.js

@@ -59,6 +59,8 @@ const KNOB_POLL_MS = 200, KNOB_REST_MS = 900;
 const KNOB_STEP_MAX = 7;
 // kommt oder geht eine andere Verbindung (Navi-Ansage, Telefon), gehören Änderungen so lange dem Auto
 const KNOB_OTHERS_MS = 2500;
+// älter darf der letzte gelesene Wert nicht sein, um einen Dreh daraus abzuleiten
+const KNOB_GAP_MS = 3000;
 // Beim Verbinden/Trennen unseres Kanals stellt das Auto die Lautstärke der Haupt-Senke selbst um (eine Durchsage ist
 // nie leiser als die Musik). Das ist kein Knopf: nach jedem eigenen Wechsel so lange nur den neuen Wert merken.
 const KNOB_SETTLE_MS = 2500;
@@ -114,9 +116,11 @@ class CarRoute {
     this.srcNames = {}; this.srcAt = 0;
     this.knobOn = true;         // Einstellung "Lautstärkeknopf regelt die Musik"
     this.knobVol = null; this.knobAt = 0; this.knobBusy = false; this.knobTimer = null; this.knobErr = null;
-    this.knobSig = null; this.knobQuiet = 0; this.knobIgnored = 0; this.knobTurns = 0; this.knobWake = null;
+    this.knobSig = null; this.knobQuiet = 0; this.knobIgnored = 0; this.knobTurns = 0; this.knobWake = null; this.knobReadAt = 0;
     this.others = null; this.othersAt = 0;   // andere aktive Verbindungen (Musik, Ansagen) und wann sie sich änderten
     this.warned = null; this.warnedAt = 0;
+    this.lastNow = 0; this.stopped = false; this.unavail = 0;
+    this.orphans = []; this.sweepAt = 0;     // Verbindungen, deren Trennen fehlschlug (Nummern)
     this.onChange = null;       // fn(): hörbar/gehalten hat sich geändert (die App schaltet den Ton weich)
     this.lastAudible = null;
   }
@@ -129,6 +133,25 @@ class CarRoute {
     this.timer = setInterval(() => this._step(), CHECK_MS);
     this.knobTimer = setInterval(() => this._knobTick(), KNOB_POLL_MS);
     this._step();
+  }
+
+  /** App wird beendet: Verbindung freigeben (sonst hält das Auto die Musik abgesenkt und der nächste Start erbt sie). */
+  stop() {
+    this.stopped = true;
+    if (this.timer) clearInterval(this.timer);
+    if (this.knobTimer) clearInterval(this.knobTimer);
+    if (this.knobWake) clearTimeout(this.knobWake);
+    this.timer = this.knobTimer = this.knobWake = null;
+    this.wanted = false;
+    // beim Trennen nicht aufgeben: bis zu drei Versuche (die Plattform lässt ~200 ms)
+    const again = (n) => (n > 0 && this.orphans.length && this.am ? this._sweep().catch(() => again(n - 1)) : Promise.resolve());
+    return this.conn && this.am ? this._disconnect().catch(() => {}).then(() => again(3)) : again(3);
+  }
+
+  /** Uhr zurückgestellt (Head Unit gleicht nach dem Start die Zeit ab): gemerkte Zeitpunkte lägen in der Zukunft. */
+  _clock(now) {
+    if (now < this.lastNow - 2000) { this.nextTry = 0; this.lastVerify = 0; this.lastDuck = 0; this.knobAt = 0; this.knobQuiet = 0; this.othersAt = 0; this.srcAt = 0; this.warnedAt = 0; }
+    this.lastNow = now;
   }
 
   /** Lautstärkeknopf der Musik überlassen an/aus (Einstellung). */
@@ -176,6 +199,9 @@ class CarRoute {
       // Wiederverbinden zählt erst nach der Beruhigung wieder etwas.
       const counts = this.knobHeld() || (now >= this.knobQuiet && this.audible());
       if (isFinite(v)) {
+        // nach einer Lücke (Audiomanager antwortete nicht) ist der alte Wert nichts wert: nur neu merken
+        if (now - this.knobReadAt > KNOB_GAP_MS) this.knobVol = null;
+        this.knobReadAt = now;
         const moved = this.knobVol !== null && v !== this.knobVol;
         const step = moved ? Math.abs(v - this.knobVol) : 0;
         // in der Pause zählt nur die Größe: unser eigenes Trennen kann andere Verbindungen im Zustand ändern
@@ -259,7 +285,7 @@ class CarRoute {
         try {
           const src = listOf(await this._call(this.am, 'getListMainSources', {}, 3000), ['listMainSources']);
           src.forEach((x) => { this.srcNames[x.sourceID] = String(x.name || ''); });
-        } catch (e) { /* nächstes Mal */ }
+        } catch (e) { this.srcAt = Date.now() - 27000; /* in 3 s noch einmal: ohne Namen kein Absenken */ }
       }
       const hit = active.filter((c) => CarRoute.duckName(this.srcNames[c.source]))[0];
       const by = hit ? this.srcNames[hit.source] + ' (' + hit.source + ')' : null;
@@ -285,8 +311,12 @@ class CarRoute {
     if (this.am && this.amr) return true;
     if (!this.signals || !this.signals.proxy) { this.proxyErr = 'kein SOME/IP'; return false; }
     try {
-      if (!this.am) this.am = await this.signals.proxy(AM, INSTANCE);
-      if (!this.amr) this.amr = await this.signals.proxy(AMR, INSTANCE);
+      for (const x of [['am', AM], ['amr', AMR]]) {
+        if (this[x[0]]) continue;
+        this[x[0]] = await this.signals.proxy(x[1], INSTANCE);
+        // erst nach diesem Abo nimmt die Schnittstelle Aufrufe an, wenn der Dienst beim Hochfahren später kommt
+        if (this.signals.onAvailable) Promise.resolve(this.signals.onAvailable(this[x[0]], () => {})).catch(() => {});
+      }
       this.proxyErr = null;
       return true;
     } catch (e) {
@@ -295,7 +325,22 @@ class CarRoute {
     }
   }
 
-  _call(p, method, params, ms) { return this.signals.call(p, method, params || {}, ms || CALL_MS); }
+  async _call(p, method, params, ms) {
+    try {
+      const r = await this.signals.call(p, method, params || {}, ms || CALL_MS);
+      this.unavail = 0;
+      return r;
+    } catch (e) {
+      // Verbindung zum Audiomanager bleibt tot (Dienst beim Hochfahren neu gestartet): neu aufbauen
+      if (/unavailable/i.test(String(e && e.message || e)) && ++this.unavail >= 5) {
+        this.unavail = 0;
+        this.log.warn('iconix: Audiomanager antwortet nicht – baue die Verbindung neu auf');
+        [this.am, this.amr].forEach((x) => { try { if (x && x.shutdown) Promise.resolve(x.shutdown()).catch(() => {}); } catch (x2) { /* egal */ } });
+        this.am = null; this.amr = null;
+      }
+      throw e;
+    }
+  }
 
   async _connections() {
     const r = await this._call(this.am, 'getListMainConnections', {});
@@ -335,10 +380,16 @@ class CarRoute {
   }
 
   async _step() {
+    if (this.stopped) return;
     const now = Date.now();
+    this._clock(now);
     if ((this.duckOn || this.knobOn) && this.conn && now - this.lastDuck >= DUCK_POLL_MS) this._pollDuck();
     else if (!this.wanted && this.ducked) { this.ducked = false; this.duckBy = null; }
     if (this.busy) return;
+    if (this.orphans.length && now - this.sweepAt > RETRY_MS) {
+      this.sweepAt = now; this.busy = true;
+      try { if (await this._proxies()) await this._sweep(); } catch (e) { /* nächstes Mal */ } finally { this.busy = false; }
+    }
     const target = this.wanted && this.needsAm() && !this.knobHeld() ? this.routeId : null;
     const r = target ? ROUTES[target] : null;
     // nichts zu tun?
@@ -431,7 +482,11 @@ class CarRoute {
     this.conn = null; this.connState = null;
     this._save(); this._changed();
     if (c.id != null) {
-      try { await this._call(this.am, 'disconnect', { mainConnectionID: c.id }); } catch (e) { this.log.warn('iconix: AM disconnect: ' + e); }
+      try { await this._call(this.am, 'disconnect', { mainConnectionID: c.id }); } catch (e) {
+        // sonst bliebe sie im Auto offen: Musik leise, Knopf beim Motorsound – später erneut trennen
+        this.log.warn('iconix: AM disconnect: ' + e);
+        this.orphans.push(c.id);
+      }
     }
     const r = ROUTES[c.routeId];
     if (r && r.mark) {
@@ -440,6 +495,19 @@ class CarRoute {
       if (!left.length) { try { await this._mark(c.source, false); } catch (e) { /* egal */ } }
     }
     this.log.info('iconix: AM getrennt ' + c.source + ' -> ' + c.sink);
+  }
+
+  /** Verbindungen trennen, deren Trennen fehlschlug. Vergebene Nummern prüfen: nur, wenn sie noch unsere Quelle hat. */
+  async _sweep() {
+    const ids = this.orphans.slice();
+    const list = await this._connections();
+    for (let i = 0; i < ids.length; i++) {
+      const x = list.filter((y) => y.id === ids[i])[0];
+      const ours = x && Object.keys(ROUTES).some((k) => ROUTES[k].source === x.source) && !(this.conn && this.conn.id === x.id);
+      if (ours) await this._call(this.am, 'disconnect', { mainConnectionID: x.id });   // wirft: bleibt in der Liste
+      this.orphans = this.orphans.filter((y) => y !== ids[i]);
+      if (ours) this.log.info('iconix: AM-Verbindung ' + x.id + ' nachträglich getrennt');
+    }
   }
 
   /** Zeilen für die Audio-Diagnose: Weg, Verbindung, Quellen und Senken des Audiomanagers. */

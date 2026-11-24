@@ -18,6 +18,7 @@ process.env.MGU_NO_GRAB = '1';
  * Die Kit-Aufrufe sind gegen idrive7-apps (kit/runtime/mgu.js, record.js, display.js, signals.js,
  * apps/redline/main.js) abgeglichen.
  */
+const os = require('os');
 const mgu = require('./kit/mgu');
 const Profiles = require('./profiles');
 const UI = require('./ui');
@@ -25,7 +26,7 @@ const AudioLink = require('./audio_link');
 const VehicleFeed = require('./vehicle_feed');
 const CarRoute = require('./car_route');
 
-const VERSION = '1.0.6';
+const VERSION = '1.0.7';
 // eigener Reiter "Sound" neben "Settings" im Kopf des Kits (führt aus den Einstellungen zurück)
 const TAB_INFO = { tabs: ['Sound'], sel: 0, badges: [] };
 // Audiomanager-Verbindung: Sie braucht im Auto ~6 s, bis sie hörbar ist (CS_CONNECTED). Darum wird sie schon beim
@@ -106,8 +107,20 @@ function startCore(host) {
   };
   let lastActivity = 0, lastData = 0, pendingTest = 0;
 
+  // Autostart nachvollziehen: wann nach dem Hochfahren des Head Units kam die App, die Drehzahl, der Tonweg, der Ton?
+  // Steht im Log (QR-Log) und in der Audio-Diagnose.
+  const marks = [];
+  const mark = (name, text) => {
+    if (marks.some(x => x.name === name)) return;
+    const x = { name, text, up: Math.round(os.uptime()) };
+    marks.push(x);
+    log.info('iconix: Start: ' + text + ' ' + x.up + ' s nach dem Hochfahren');
+  };
+  mark('app', 'App (' + String((host.app && host.app.startReason) || '?') + ')');
+
   feed.on('sample', s => {
     const now = Date.now();
+    if (!lastData) mark('data', 'erste Drehzahl (' + Math.round(s.rpm) + ')');
     // Aufwachen (erste Daten nach Schlaf/Start) oder laufender Motor halten den Tonweg bereit
     if (now - lastData > WAKE_GAP_MS || s.rpm > 300) lastActivity = now;
     lastData = now;
@@ -131,7 +144,10 @@ function startCore(host) {
   setInterval(() => {
     const ds = link.connected ? link.daemonStatus : (link.local ? link.localStatus : null);
     const now = Date.now();
-    if (ds && (ds.wants || ds.playing) && last && last.rpm > 100) lastActivity = now;
+    if (link.connected) mark('daemon', 'Audio-Dienst verbunden');
+    if (route.audible()) mark('route', 'Tonweg hörbar');
+    if (ds && ds.playing) mark('play', 'Ton läuft' + (ds.openMs > 3000 ? ' (Kanal öffnete erst nach ' + Math.round(ds.openMs / 1000) + ' s)' : ''));
+    if (ds && (ds.wants || ds.playing || ds.opening) && last && last.rpm > 100) lastActivity = now;
     if (ds && ds.devTest) lastActivity = now;
     route.want(synthCfgCache.route, bool(setting(settings, 'enabled')) && lastActivity > 0 && now - lastActivity < ROUTE_KEEP_MS);
     // Telefon, Navi-Ansage, Parkpiepser: Motorsound absenken (CarRoute beobachtet den Audiomanager)
@@ -142,6 +158,8 @@ function startCore(host) {
   route.setDuck(uiCfg.duck);
   route.setKnob(uiCfg.knobMusic);
   route.start();
+  // die Plattform beendet die App (Update, Abschalten): Tonweg sauber freigeben
+  if (host.app && typeof host.app.on === 'function') host.app.on('shutdown', () => { route.stop(); });
   log.info('iconix: Kern gestartet, Version ' + VERSION + ', Tonweg ' + synthCfgCache.route);
 
   // Testsound: Tonweg sofort bereitstellen; ist er noch nicht hörbar (verbindet ~6 s), startet der Test, sobald er es ist
@@ -155,7 +173,8 @@ function startCore(host) {
     if (v == null && prev === num(setting(settings, 'volume'), 80)) return;
     pushCfg();
   };
-  core = { link, feed, route, pushCfg, synthCfg, test, previewVolume, ui: () => uiCfg, log, last: () => last, speed: () => feed.speed() };
+  core = { link, feed, route, pushCfg, synthCfg, test, previewVolume, ui: () => uiCfg, log, last: () => last, speed: () => feed.speed(),
+    startInfo: () => 'Autostart: ' + marks.map(x => x.text + ' ' + x.up + ' s').join(' · ') + ' (nach dem Hochfahren)' };
   return core;
 }
 
@@ -279,7 +298,7 @@ mgu.run({
     // Oben der Tonweg (Audiomanager: Verbindungen, Quellen, Senken – kommt asynchron), darunter Dienst und App.
     let diag = null, routeLines = ['--- Tonweg (Audiomanager) ---', '(wird abgefragt ...)'];
     // breite Ansicht: längere Zeilen (die Diagnose-Kachel ist dann ~1100 px breit)
-    const diagText = linkLines => wrapLines(routeLines.concat(linkLines), c.ui().wide ? 100 : 64);
+    const diagText = linkLines => wrapLines([c.startInfo()].concat(routeLines, linkLines), c.ui().wide ? 100 : 64);
     const openDiag = () => {
       const d = diag = { linkLines: c.link.diagnose(), page: 0 };
       d.lines = diagText(d.linkLines);

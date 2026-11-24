@@ -31,7 +31,7 @@ const Synth = require('./synth');
 const Profiles = require('./profiles');
 const E = require('./engine');
 
-const VERSION = '1.0.6';
+const VERSION = '1.0.7';
 const SOCKETS = process.env.ICONIX_AUDIOD_SOCKET
   ? [process.env.ICONIX_AUDIOD_SOCKET]
   : ['/run/iconix-audiod/audiod.sock', '/tmp/iconix-audiod.sock'];

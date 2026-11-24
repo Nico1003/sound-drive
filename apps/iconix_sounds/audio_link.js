@@ -150,7 +150,7 @@ class AudioLink extends EventEmitter {
       head.push('Ausgabegerät: ' + (ds.device || 'auto') + ' · Python: ' + (ds.python || 'nicht gefunden'));
       // Verzögerung und Aussetzer: Vorlauf passt sich an (Start 100 ms, bei ruhigem Lauf bis 60 ms)
       head.push('Ton: Vorlauf ' + (ds.leadMs != null ? ds.leadMs + ' ms' : '?') +
-        (ds.bufMs ? ' · ALSA-Puffer ' + ds.bufMs + ' ms' : '') + (ds.rt ? ' · Echtzeit ' + ds.rt : '') +
+        (ds.bufMs ? ' · ALSA-Puffer ' + ds.bufMs + ' ms' : '') + (ds.rt ? ' · Echtzeit ' + ds.rt : '') + (ds.openMs != null ? ' · Kanal offen nach ' + ds.openMs + ' ms' : '') +
         ' · Aussetzer ' + (ds.underruns || 0) + (ds.late ? ' · verspätete Takte ' + ds.late : '') + (ds.gapMs ? ' · längste Pause ' + ds.gapMs + ' ms' : '') +
         (ds.ducked ? ' · abgesenkt' : ''));
       if (ds.scan) {
@@ -251,7 +251,7 @@ class AudioLink extends EventEmitter {
   _describe(m, prefix) {
     if (m.devTest) return { ok: true, text: 'Gerätetest ' + m.devTest.i + '/' + m.devTest.n + ': ' + m.devTest.device + ' – hörst du etwas?' };
     if (m.error) return { ok: false, text: prefix + m.error };
-    let text = prefix + (m.backend || '?') + ' · ' + khz(m.outRate || m.rate) + ' kHz' + (m.playing ? ' · spielt' : ' · bereit');
+    let text = prefix + (m.backend || '?') + ' · ' + khz(m.outRate || m.rate) + ' kHz' + (m.opening ? ' · öffnet Kanal' : m.playing ? ' · spielt' : ' · bereit');
     // hörbare Aussetzer (Meldungen des Players). Verspätete Takte des Dienstes stehen nur in der Diagnose: Sie sind die
     // Ursache derselben Aussetzer – beides zusammen zählte doppelt.
     const drops = m.underruns || 0;

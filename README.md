@@ -43,7 +43,8 @@ beim Gleiten bleibt er dezent im Hintergrund, im Schub blubbert er leise aus.
   damit er gegen Wind- und Abrollgeräusche ankommt.
 - **Startsound:** Beim Motorstart dreht der Starter kurz durch, der Motor springt an, dreht hoch und fällt auf
   Leerlauf – passend zum gewählten Profil (abschaltbar).
-- **Startet von selbst** mit dem Auto und läuft im Hintergrund – die App muss nicht geöffnet werden; schont das Head Unit
+- **Startet von selbst** mit dem Auto und läuft im Hintergrund – die App muss nicht geöffnet werden. Wann, bestimmt das
+  Head Unit (nach einem Kaltstart erst, wenn es hochgefahren ist); die Audio-Diagnose zeigt die Zeiten. Schont das Head Unit
   (Klangberechnung direkt in 24 kHz, wenige Millisekunden Rechenzeit pro Sekunde Ton).
 
 ### Die Profile
@@ -135,8 +136,8 @@ Klappt es nicht auf Anhieb: In der Statuszeile sollte „Overlay-Mix: verbunden�
 
 | Komponente | Version |
 |---|---|
-| Sound Drive (App) | 1.0.6 |
-| Sound Drive Audio (Tool) | 1.0.6 |
+| Sound Drive (App) | 1.0.7 |
+| Sound Drive Audio (Tool) | 1.0.7 |
 
 ---
 

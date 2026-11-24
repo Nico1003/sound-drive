@@ -101,8 +101,8 @@ function findBin(bin) {
 // Python finden: PATH, dann die Store-Tools unter /var/opt (mgu-python bringt Python 3.12 mit)
 let pythonCache;
 function findPython() {
-  if (pythonCache !== undefined) return pythonCache;
-  pythonCache = null;
+  // nur einen Treffer merken: beim Hochfahren kann Python noch fehlen, dann beim nächsten Versuch wieder suchen
+  if (pythonCache) return pythonCache;
   if (process.env.ICONIX_PYTHON) { pythonCache = process.env.ICONIX_PYTHON; return pythonCache; }
   const names = ['python3', 'python3.12', 'python'];
   for (let i = 0; i < names.length; i++) { const p = findBin(names[i]); if (p) { pythonCache = p; return p; } }
@@ -245,6 +245,7 @@ function Output(onState, log, opts) {
   this.lastErr = '';
   this.fmt = { rate: RATE, ch: 2 };
   this.played = null;
+  this.sent = 0; this.opened = false; this.openMs = null;
 }
 
 Output.prototype.start = function () {
@@ -274,6 +275,8 @@ Output.prototype.start = function () {
   // gespielte Frames (Ausgaberate) laut Player; null = Player meldet nichts -> Takt nach Uhr
   this.played = b.pos ? 0 : null;
   this.startedAt = startedAt; this.gotPos = false;
+  // Das erste Öffnen eines SmartX-Kanals nach dem Hochfahren kann lange dauern (andere maßen bis 52 s)
+  this.opened = !b.pos; this.openMs = null; this.sent = 0;
   if (b.pos && child.stdout) {
     let rest = '';
     child.stdout.setEncoding('ascii');
@@ -281,7 +284,7 @@ Output.prototype.start = function () {
       if (self.child !== child) return;
       const lines = (rest + d).split('\n'); rest = lines.pop();
       for (let i = lines.length - 1; i >= 0; i--) {
-        if (lines[i].charAt(0) === 'P') { const v = Number(lines[i].slice(2)); if (isFinite(v)) { self.played = v; self.gotPos = true; break; } }
+        if (lines[i].charAt(0) === 'P') { const v = Number(lines[i].slice(2)); if (isFinite(v)) { self.played = v; self.gotPos = true; self._open(); break; } }
       }
     });
   }
@@ -296,7 +299,7 @@ Output.prototype.start = function () {
       return;
     }
     const mb = /Puffer (\d+) ms/.exec(line);
-    if (mb) { self.bufMs = Number(mb[1]); const mr = /Echtzeit (.*)$/.exec(line); self.rt = mr ? mr[1] : null; log(b.name + ': ' + line); return; }
+    if (mb) { if (self.child === child) self._open(); self.bufMs = Number(mb[1]); const mr = /Echtzeit (.*)$/.exec(line); self.rt = mr ? mr[1] : null; log(b.name + ': ' + line); return; }
     self.lastErr = line.slice(0, 120); log(b.name + ': ' + line);
   });
   child.stdin.on('error', function () { /* EPIPE -> exit folgt */ });
@@ -321,6 +324,14 @@ Output.prototype.start = function () {
   return true;
 };
 
+/** Kanal ist offen: merken, wie lange es gedauert hat. */
+Output.prototype._open = function () {
+  if (this.opened) return;
+  this.opened = true; this.openedAt = Date.now(); this.openMs = this.openedAt - this.startedAt;
+  if (this.openMs > 3000) this.log(this.backend + ': Kanal öffnete erst nach ' + this.openMs + ' ms');
+  this.onState();
+};
+
 Output.prototype.stop = function () {
   if (!this.child || this.stopping) return;
   this.stopping = true;
@@ -334,6 +345,7 @@ Output.prototype.step = function () { return Math.max(1, Math.round(RATE / (this
 
 Output.prototype.write = function (buf) {
   if (!this.child || this.blocked) return false;
+  this.sent += buf.length / (2 * (this.fmt.ch === 1 ? 1 : 2));   // Frames in Ausgaberate, seit dem Start dieses Players
   const ok = this.child.stdin.write(buf);
   if (!ok) this.blocked = true;
   return true;
@@ -554,7 +566,7 @@ Engine.prototype.status = function () {
   return {
     ok: !out.error,
     backend: out.backend || (out.list[0] && !out.error ? out.list[0].name : null),
-    rate: RATE, playing: !!out.child, error: out.error, profile: this.synth.pending || this.synth.cfg.profile,
+    rate: RATE, playing: !!out.child && out.opened !== false, opening: !!out.child && out.opened === false, openMs: out.openMs, error: out.error, profile: this.synth.pending || this.synth.cfg.profile,
     underruns: out.underruns || 0, late: this.late, gapMs: this.gapMs, bufMs: out.child ? out.bufMs || null : null, rt: out.child ? out.rt || null : null, ducked: !!this.synth.cfg.duck, leadMs: out.played != null && out.child ? (this.fbLead || FB_LEAD_MS) : LEAD_MS,
     players: out.list.map(function (b) { return b.name; }),
     device: this.device, resolved: out.opts.device, python: findPython(),
@@ -640,8 +652,10 @@ Engine.prototype._tick = function () {
 
   const step = out.step();
   let due;
-  // Player meldet nach 1,5 s noch nichts (alte alsa_play.py?) -> zurück zum Takt nach Uhr statt still zu bleiben
-  if (out.played === 0 && !out.gotPos && out.startedAt && now - out.startedAt > 1500) {
+  // Player meldet 1,5 s nach dem Öffnen noch nichts (alte alsa_play.py?) -> zurück zum Takt nach Uhr statt still zu
+  // bleiben. Nicht, solange er den Kanal noch öffnet: Sonst liefe die Pipe voll (über 1 s Ton) und alles käme danach
+  // dauerhaft verspätet.
+  if (out.played === 0 && !out.gotPos && out.opened !== false && out.startedAt && now - (out.openedAt || out.startedAt) > 1500) {
     out.played = null; this.t0 = now; this.written = 0;
     this.log(out.backend + ': keine Rückmeldung vom Player – Takt nach Uhr');
   }
@@ -657,9 +671,9 @@ Engine.prototype._tick = function () {
       if (this.fbFloor > FB_LEAD_MS && now - this.fbFloorAt > FB_FLOOR_MS) { this.fbFloor = Math.max(FB_LEAD_MS, this.fbFloor - 10); this.fbFloorAt = now; }
       if (now - this.fbCalm > 10000 && this.fbLead > this.fbFloor) { this.fbLead = Math.max(this.fbFloor, this.fbLead - 10); this.fbCalm = now; }
     }
-    // nie negativ: meldet der Player mehr, als wir geschrieben haben (Rundung, alter Player), schriebe der Dienst
-    // sonst dauerhaft über den Vorlauf hinaus vor – mehr Verzögerung
-    const queued = Math.max(0, this.written / step - out.played);
+    // Was ansteht: alles, was dieser Player je bekam (out.sent, wird nie zurückgesetzt), minus was er gespielt hat.
+    // Nie negativ (Rundung): sonst schriebe der Dienst über den Vorlauf hinaus vor – mehr Verzögerung.
+    const queued = Math.max(0, (out.sent != null ? out.sent : this.written / step) - out.played);
     due = Math.floor((this.fbLead / 1000 * RATE / step - queued)) * step;
   } else {
     due = Math.floor((now - this.t0 + LEAD_MS) / 1000 * RATE) - this.written;

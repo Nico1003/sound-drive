@@ -23,6 +23,11 @@ const IF = {
 const FRESH_MS = 1500;
 // Das Tempo kommt nur bei Änderung: länger gültig, sonst stünde bei gleichmäßiger Fahrt 0 km/h da
 const SPEED_FRESH_MS = 8000;
+// Beim Autostart (Head Unit fährt noch hoch) kann ein Fahrzeugdienst fehlen. Das Kit versucht ein Abo nur einmal – darum
+// hier wiederholen, sonst bliebe es still, bis die App neu startet. Abstände in ms, der letzte gilt danach weiter.
+const RETRY_MS = [3000, 5000, 10000, 20000, 60000];
+// Abo steht, aber es kam noch nie eine Drehzahl: nach so langer Zeit neu abonnieren (danach immer seltener)
+const SILENT_MS = [30000, 60000, 120000, 300000];
 // Vorhersage: die Drehzahl um so viel voraus schätzen (Steigung der letzten ~250 ms), wie Ton im Puffer steht –
 // so wirkt der Sound weniger verzögert. Begrenzt, damit Schaltknicke nicht überschießen.
 const PREDICT_S = 0.04, PREDICT_MAX = 250;
@@ -105,6 +110,7 @@ class VehicleFeed extends EventEmitter {
       }
     });
     this.startAt = Date.now();
+    this._watchSilent(0);
     // Gaspedal nur bei Bedarf abonnieren (siehe _pedalNeeded): jedes Abo kostet beim Hochfahren des Head Units Zeit,
     // und mit Motormoment (FES) wird das Pedal nicht gebraucht
     if (this.getCfg().loadSource === 'pedal') this._watchPedal();
@@ -127,20 +133,55 @@ class VehicleFeed extends EventEmitter {
   }
 
   stop() {
+    this.stopped = true;
+    if (this.silentTimer) clearTimeout(this.silentTimer);
     this.watches.forEach(w => { try { if (w && w.shutdown) w.shutdown(); } catch (e) { /* egal */ } });
     this.watches = [];
   }
 
   // signals.watch ist async und liefert { iface, available, proxy, error, shutdown }
-  _watch(iface, handlers) {
+  _watch(iface, handlers, attempt) {
+    const n = attempt || 0;
+    const again = () => {
+      if (this.stopped) return;
+      const t = setTimeout(() => { if (!this.stopped) this._watch(iface, handlers, n + 1); }, RETRY_MS[Math.min(n, RETRY_MS.length - 1)]);
+      if (t.unref) t.unref();
+    };
+    // dauerhaft nicht da (Auto/Vorschau ohne diese Schnittstelle): nicht wiederholen
+    const never = e => /no SOME\/IP config|native module not available|^preview$/.test(String(e));
+    if (iface === IF.CDS) this.cds = handlers;
     let p;
     try { p = this.signals.watch(iface, '1', handlers, this.log); } catch (e) { p = Promise.reject(e); }
     Promise.resolve(p).then(w => {
       if (!w) return;
+      if (w.error) {
+        if (n < 3 || n % 10 === 0) this.log.warn('iconix: ' + iface + ' nicht verfügbar' + (n ? ' (Versuch ' + (n + 1) + ')' : '') + ': ' + w.error);
+        try { if (w.shutdown) w.shutdown(); } catch (e) { /* egal */ }   // halb eingerichtetes Abo nicht stehen lassen
+        if (!never(w.error)) again();
+        return;
+      }
+      if (this.stopped) { try { if (w.shutdown) w.shutdown(); } catch (e) { /* egal */ } return; }
       this.watches.push(w);
-      if (w.error) this.log.warn('iconix: ' + iface + ' nicht verfügbar: ' + w.error);
-      else this.log.info('iconix: ' + iface + ' abonniert');
-    }).catch(e => this.log.warn('iconix: watch ' + iface + ' fehlgeschlagen: ' + (e && e.message)));
+      if (iface === IF.CDS) this.cdsWatch = w;
+      this.log.info('iconix: ' + iface + ' abonniert' + (n ? ' (Versuch ' + (n + 1) + ')' : ''));
+    }).catch(e => { this.log.warn('iconix: watch ' + iface + ' fehlgeschlagen: ' + (e && e.message)); again(); });
+  }
+
+  // Abo der Drehzahl steht, liefert aber nie etwas (Dienst beim Abonnieren noch nicht bereit): neu abonnieren
+  _watchSilent(n) {
+    this.silentTimer = setTimeout(() => {
+      if (this.stopped || this.v.rpmAt) return;
+      const old = this.cdsWatch;
+      if (old) {
+        this.log.warn('iconix: noch keine Drehzahl – abonniere neu (' + (n + 1) + ')');
+        this.cdsWatch = null;
+        this.watches = this.watches.filter(w => w !== old);
+        try { if (old.shutdown) old.shutdown(); } catch (e) { /* egal */ }
+        this._watch(IF.CDS, this.cds);
+      }
+      this._watchSilent(n + 1);
+    }, SILENT_MS[Math.min(n, SILENT_MS.length - 1)]);
+    if (this.silentTimer.unref) this.silentTimer.unref();
   }
 
   // die ersten Rohwerte ins Log schreiben (zur Kontrolle der Skalierung)
@@ -210,4 +251,6 @@ class VehicleFeed extends EventEmitter {
 
 module.exports = VehicleFeed;
 module.exports.IF = IF;
+module.exports.RETRY_MS = RETRY_MS;
+module.exports.SILENT_MS = SILENT_MS;
 module.exports.driveModeOf = driveModeOf;

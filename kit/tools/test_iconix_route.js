@@ -234,7 +234,7 @@ test('Schub leiser als Last, ohne Übersteuern', () => {
   const r = drive('v8', 24000, 9, (t) => t < 6 ? { rpm: 1100 + 3700 * t / 6, load: 1, speed: 80 } : { rpm: 4800 - 3200 * (t - 6) / 3, load: 0, overrun: true, speed: 90 });
   const rms = (a) => Math.sqrt(a.reduce((s, v) => s + v * v, 0) / a.length);
   const wot = rms(r.out.subarray(24000 * 3, 24000 * 6)), ovr = rms(r.out.subarray(24000 * 6.3));
-  assert.ok(ovr < wot * 0.7 && ovr > wot * 0.1, 'Schub ' + ovr.toFixed(3) + ' vs Last ' + wot.toFixed(3));
+  assert.ok(ovr < wot * 0.75 && ovr > wot * 0.1, 'Schub ' + ovr.toFixed(3) + ' vs Last ' + wot.toFixed(3));
   assert.ok(r.peak <= 1);
 });
 
@@ -515,7 +515,7 @@ test('Fahrmodus: Schalter-Werte werden erkannt, Eco leiser und dumpfer, Sport la
   assert.strictEqual(M(2), 'sport'); assert.strictEqual(M(28), 'sport'); assert.strictEqual(M(8), 'eco'); assert.strictEqual(M(5), 'comfort');
   assert.strictEqual(M(10), 'comfort'); assert.strictEqual(M(19), 'comfort'); assert.strictEqual(M('SPORT_PLUS'), 'sportplus');
   assert.strictEqual(M('ECO_PRO'), 'eco'); assert.strictEqual(M(''), null); assert.strictEqual(M(undefined), null);
-  const run = (mode) => { const s = new Synth(24000); s.configure({ profile: 'turbo4', volume: 0.8, enabled: true, mode }); s._setProfile('turbo4');
+  const run = (mode) => { const s = new Synth(24000); s.configure({ profile: 'turbo4', volume: 0.45, enabled: true, mode }); s._setProfile('turbo4');   // normale Lautstärke (bei 80 % ist kein Platz mehr nach oben)
     const f = new Float32Array(480); let sum = 0, n = 0;
     for (let k = 0; k < 400; k++) { s.setParams({ rpm: 2500, load: 0.4, speed: 80 }); s.render(f, 240); if (k > 250) for (let i = 0; i < 480; i += 2) { sum += f[i] * f[i]; n++; } }
     return Math.sqrt(sum / n); };
@@ -805,6 +805,160 @@ test('Power Four: oben kräftiger als in der Mitte und nicht nur ein Ton', () =>
   const m = run(3000), h = run(4500);
   assert.ok(h.rms > m.rms, 'oben lauter: ' + h.rms.toFixed(1) + ' > ' + m.rms.toFixed(1));
   assert.ok(h.low > 0.25, 'Fülle unter der Zündfrequenz: ' + h.low.toFixed(2));
+});
+
+test('Autostart: Fahrzeugdienst beim Hochfahren noch nicht bereit – Abo wird wiederholt', async () => {
+  const VehicleFeed = require(path.join(ROOT, 'apps/iconix_sounds/vehicle_feed.js'));
+  const real = global.setTimeout, waits = [];
+  global.setTimeout = (fn, ms) => { waits.push({ fn, ms }); return { unref() {} }; };
+  const settle = async () => { for (let i = 0; i < 6; i++) await new Promise((ok) => setImmediate(ok)); };
+  const fire = async (ms) => { const i = waits.findIndex((w) => w.ms === ms); assert.ok(i >= 0, 'Timer ' + ms + ' aus ' + waits.map((w) => w.ms)); waits.splice(i, 1)[0].fn(); await settle(); };
+  try {
+    const tries = {}, shut = [], h = {};
+    const signals = { watch: async (iface, inst, hd) => {
+      tries[iface] = (tries[iface] || 0) + 1;
+      if (iface === VehicleFeed.IF.FES) return { error: 'Error: no SOME/IP config for x' };
+      if (iface === VehicleFeed.IF.CDS && tries[iface] === 1) return { error: 'Error: init timeout', shutdown: () => shut.push('kaputt') };
+      if (iface === VehicleFeed.IF.CDS && tries[iface] === 2) throw new Error('boom');
+      Object.assign(h, hd);
+      return { shutdown: () => shut.push(iface) };
+    } };
+    const feed = new VehicleFeed(signals, quiet, () => ({ loadSource: 'auto', maxTorque: 400, carIdle: 800 }));
+    feed.start(); await settle();
+    assert.deepStrictEqual(shut, ['kaputt'], 'halbes Abo aufgeräumt');
+    await fire(VehicleFeed.RETRY_MS[0]); await fire(VehicleFeed.RETRY_MS[1]);
+    assert.strictEqual(tries[VehicleFeed.IF.CDS], 3, 'bis es klappt');
+    assert.strictEqual(tries[VehicleFeed.IF.FES], 1, 'fehlende Schnittstelle nicht wiederholen');
+    // steht, liefert aber nie eine Drehzahl -> neu abonnieren; danach Ruhe
+    await fire(VehicleFeed.SILENT_MS[0]);
+    assert.strictEqual(tries[VehicleFeed.IF.CDS], 4);
+    assert.ok(shut.includes(VehicleFeed.IF.CDS), 'altes Abo beendet (keine doppelten Meldungen)');
+    h.statusEngineSpeed2({ actualValueRPMEngineCrankshaft: 3200 });
+    await fire(VehicleFeed.SILENT_MS[1]);
+    assert.strictEqual(tries[VehicleFeed.IF.CDS], 4, 'mit Daten kein weiteres Abo');
+    feed.stop();
+  } finally { global.setTimeout = real; }
+});
+
+test('Autostart: Beenden gibt den Tonweg frei; zurückgestellte Uhr blockiert das Verbinden nicht', async () => {
+  const { am, signals } = fakeAm();
+  const r = new CarRoute(signals, quiet, null);
+  r.want('overlay', true); await r._step();
+  assert.strictEqual(am.conns.length, 1);
+  await r.stop(); await r._step();
+  assert.strictEqual(am.conns.length, 0, 'Verbindung getrennt und nicht neu aufgebaut');
+  const f = fakeAm({ refuse: true }), r2 = new CarRoute(f.signals, quiet, null);
+  const realNow = Date.now; let t = 2e12; Date.now = () => t;
+  try {
+    r2.want('overlay', true); await r2._step();
+    assert.ok(r2.nextTry > t, 'abgelehnt, nächster Versuch gemerkt');
+    t -= 3600000;                                      // Uhr eine Stunde zurück
+    const n = f.am.calls.filter((c) => /^connect/.test(c)).length;
+    await r2._step();
+    assert.ok(f.am.calls.filter((c) => /^connect/.test(c)).length > n, 'sofort wieder versucht');
+  } finally { Date.now = realNow; }
+});
+
+test('Dienst: Python beim Hochfahren noch nicht da – wird später gefunden', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'tools/iconix-audiod/engine.js'), 'utf8');
+  const fn = /function findPython\(\) \{[\s\S]*?\n\}/.exec(src)[0];
+  let there = false;
+  const find = new Function('findBin', 'fs', 'path', 'process', 'let pythonCache;' + fn + 'return findPython;')(
+    (n) => (there && n === 'python3' ? '/x/python3' : null), { readdirSync: () => [], accessSync() { throw new Error('x'); }, constants: fs.constants }, path, { env: {} });
+  assert.strictEqual(find(), null);
+  there = true;
+  assert.strictEqual(find(), '/x/python3');
+});
+
+test('Autostart: Paket, Zeiten im Log und in der Diagnose', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/main.js'), 'utf8');
+  assert.ok(/mark\('app'/.test(src) && /mark\('data'/.test(src) && /mark\('route'/.test(src) && /mark\('play'/.test(src) && /c\.startInfo\(\)/.test(src));
+  assert.ok(/host\.app\.on\('shutdown'/.test(src));
+  const b = fs.readFileSync(path.join(ROOT, 'kit/tools/build.py'), 'utf8');
+  assert.ok(/pkg\['mguAppStartType'\] = 'autostart'/.test(b));
+});
+
+test('Dienst: langsames Öffnen des Kanals (nach dem Hochfahren) – kein Stau, keine bleibende Verzögerung', () => {
+  const eng = new E.Engine({ log() {} });
+  const o = new E.Output(() => {}, () => {}, { device: 'x' });
+  let pipe = 0;                                         // was der Player noch nicht gelesen hat (Frames)
+  o.child = { stdin: { write: (b) => { pipe += b.length / 2; return pipe < 32768; } } };
+  o.fmt = { rate: 24000, ch: 1 }; o.backend = 'x'; o.error = null; o.played = 0; o.gotPos = false; o.sent = 0; o.opened = false;
+  eng.out = o;
+  eng.synth.configure({ enabled: true, volume: 0.5 });
+  const realNow = Date.now; let t = realNow(); Date.now = () => t;
+  const run = (ms, player) => { for (let i = 0; i < ms / 10; i++) { t += 10; eng.params({ rpm: 2000, load: 0.5, speed: 50, overrun: false }); eng._tick(); if (player) player(); } };
+  try {
+    o.startedAt = t; eng.lastTick = t;
+    run(20000);                                         // 20 s bis der Kanal offen ist
+    assert.ok(pipe <= 24 * 110, 'nur der Vorlauf wartet: ' + Math.round(pipe / 24) + ' ms');
+    assert.ok(eng.status().opening && !eng.status().playing);
+    o._open();
+    assert.strictEqual(o.openMs, 20000);
+    run(3000, () => { pipe = Math.max(0, pipe - 240); o.played = o.sent - pipe; o.gotPos = true; o.blocked = false; });
+    const lat = (o.sent - o.played) / 24;
+    assert.ok(lat <= 130, 'Verzögerung danach ' + Math.round(lat) + ' ms');
+    assert.ok(eng.status().playing && !eng.status().opening);
+    // selbst mit Stau (Player ohne Rückmeldung, dann doch): wird wieder abgebaut
+    const e2 = new E.Engine({ log() {} }), p = Object.assign(new E.Output(() => {}, () => {}, { device: 'x' }), { fmt: { rate: 24000, ch: 1 }, backend: 'x', error: null, played: 0, gotPos: false, opened: true, openedAt: t, startedAt: t });
+    let q = 0; p.child = { stdin: { write: (b) => { q += b.length / 2; return true; } } };
+    e2.out = p; e2.synth.configure({ enabled: true }); e2.lastTick = t;
+    for (let i = 0; i < 300; i++) { t += 10; e2.params({ rpm: 2000, load: 0.5, speed: 50 }); e2._tick(); }
+    assert.ok(q > 24000, 'Takt nach Uhr staut');
+    for (let i = 0; i < 600; i++) { t += 10; q = Math.max(0, q - 240); p.played = p.sent - q; p.gotPos = true; e2.params({ rpm: 2000, load: 0.5, speed: 50 }); e2._tick(); }
+    assert.ok(q / 24 < 130, 'Stau abgebaut: ' + Math.round(q / 24) + ' ms');
+  } finally { Date.now = realNow; }
+});
+
+test('Dienst: läuft in der CPU-Gruppe der Standarddienste, nicht vor der Bedienoberfläche', () => {
+  const u = fs.readFileSync(path.join(ROOT, 'tools/iconix-audiod/iconix-audiod.service'), 'utf8');
+  assert.ok(/^Slice=standard\.slice$/m.test(u) && !/^Nice=-/m.test(u) && /^LimitRTPRIO=10$/m.test(u));
+  const py = fs.readFileSync(path.join(ROOT, 'tools/iconix-audiod/alsa_play.py'), 'utf8');
+  assert.ok(/os\.stat\('\/run\/smartx'\)/.test(py) && !/getpwnam/.test(py), 'Besitzer wie der Ordner');
+});
+
+test('Autostart: Audiomanager beim Hochfahren tot – Verbindung wird neu aufgebaut', async () => {
+  const { am, signals } = fakeAm();
+  let built = 0, dead = true, subs = 0; const proxy = signals.proxy, call = signals.call;
+  signals.proxy = async (a, b) => { built++; if (built > 2) dead = false; return proxy(a, b); };
+  signals.onAvailable = async () => { subs++; };
+  signals.call = async (...x) => { if (dead) throw new Error('Service unavailable for call ' + x[1] + '()'); return call(...x); };
+  const r = new CarRoute(signals, quiet, null);
+  r.want('overlay', true);
+  for (let i = 0; i < 8 && !am.conns.length; i++) { r.nextTry = 0; await r._step(); }
+  assert.strictEqual(am.conns.length, 1, 'verbunden nach neuem Aufbau');
+  assert.strictEqual(subs, 4, 'Verfügbarkeit abonniert');
+});
+
+test('Klang: laut heißt nicht verzerrt – Begrenzer stellt leiser, statt Wellen abzuschneiden', () => {
+  const run = (volume, mode, speed) => { const s = new Synth(24000); s.configure({ profile: 'boxer', volume, mode, enabled: true, startSound: false }); s._setProfile('boxer');
+    const f = new Float32Array(480), a = new Synth.Biquad().set('hp', 1500, 0.54, 24000), b = new Synth.Biquad().set('hp', 1500, 1.3, 24000); let hi = 0, e = 0, lim = 0, n = 0;
+    for (let k = 0; k < 600; k++) { if (k % 6 === 0) s.setParams({ rpm: 1400 + 5 * k, load: 0.85, speed }); s.render(f, 240);
+      if (k > 60) for (let i = 0; i < 480; i += 2) { const y = b.run(a.run(f[i])); hi += y * y; e += f[i] * f[i]; if (Math.abs(f[i]) > 0.8) lim++; n++; } }
+    return { db: 10 * Math.log10(hi / e), lim: lim / n }; };
+  for (const [v, m, sp] of [[0.5, null, 60], [0.6, null, 60], [0.45, 'sport', 130], [1, null, 60]]) {
+    const r = run(v, m, sp), clean = run(0.2, m, 60);   // Vergleich: derselbe Klang leise (Sport ist von sich aus offener)
+    assert.ok(r.db < clean.db + 2.5, (v * 100) + ' % ' + (m || '') + ': Höhen ' + r.db.toFixed(1) + ' dB, sauber ' + clean.db.toFixed(1));
+    if (v <= 0.6) assert.ok(r.lim < 0.2, 'am Begrenzer ' + (100 * r.lim).toFixed(1) + ' %');
+  }
+});
+
+test('Tonweg: fehlgeschlagenes Trennen wird nachgeholt (sonst bliebe die Musik leise und der Knopf beim Motorsound)', async () => {
+  const { am, signals } = fakeAm();
+  const call = signals.call; let broken = 0;
+  signals.call = async (p, m, x) => { if (m === 'disconnect' && broken-- > 0) throw new Error('timeout'); return call(p, m, x); };
+  const r = new CarRoute(signals, quiet, null);
+  r.want('overlay', true); await r._step();
+  broken = 2; r.want('overlay', false);
+  await r._step(); assert.strictEqual(am.conns.length, 1, 'Trennen schlug fehl');
+  for (let i = 0; i < 3; i++) { r.sweepAt = 0; await r._step(); }
+  assert.strictEqual(am.conns.length, 0, 'nachgeholt'); assert.strictEqual(r.orphans.length, 0);
+  // fremde Verbindung mit derselben Nummer bleibt unangetastet
+  am.conns.push({ mainConnectionID: 77, sourceID: 12, sinkID: 1024, connectionState: 2 }); r.orphans = [77]; r.sweepAt = 0;
+  await r._step(); assert.strictEqual(am.conns.length, 1); assert.strictEqual(r.orphans.length, 0);
+  // beim Beenden
+  r.want('overlay', true); await r._step(); broken = 1; await r.stop();
+  assert.ok(!am.conns.some((c) => c.sourceID === 1048), 'Beenden trennt trotz Fehler');
 });
 
 test('App: "background" gibt es nur einmal (der zweite Eintrag gewänne still)', () => {

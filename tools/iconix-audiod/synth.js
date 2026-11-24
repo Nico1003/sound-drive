@@ -61,6 +61,7 @@
   // Fortschreiben der Drehzahl zwischen zwei Meldungen: höchstens RPM_AHEAD, keine Steigung über RPM_GLITCH (U/min je s)
   var RPM_AHEAD = 180, RPM_GLITCH = 9000, RPM_RATE_MAX = 2500;   // schnellere Wechsel (Schalten) nur gebremst fortschreiben: sonst schwingt der Ton über
   var DUCK_GAIN = 0.25;      // abgesenkt (Telefon, Ansage): ~-12 dB
+  var LIM_FROM = 0.9, LIM_SLOPE = 0.45;
   var COMP_T = 0.15, COMP_EXP = 0.667, COMP_MAKEUP = 3.0;
 
   function clamp(x, a, b) { return x < a ? a : (x > b ? b : x); }
@@ -173,7 +174,7 @@
     var sr = this.sr;
     function k(sec) { return 1 - Math.exp(-CR / (sr * sec)); }
     this.kRel = Math.exp(-CR / (sr * 0.3)); this.kCompUp = k(0.25);
-    this.prePk = 0; this.cEnv = 0; this.comp = COMP_MAKEUP;
+    this.prePk = 0; this.pkEnv = 0; this.kPk = Math.exp(-CR / (sr * 0.25)); this.cEnv = 0; this.comp = COMP_MAKEUP;
     // Drehzahl zwischen den Meldungen des Autos (nur 10–20 je Sekunde): Tonzeit, Zeit der letzten Meldung, Steigung, Abstand
     this.now = 0; this.rpmAt = -1; this.rpmRate = 0; this.rpmGap = 0;
     this.offTime = -1; this.startT = -1; this.runG = 0; this.kRun = k(0.08);      // Startsound: Motor-aus-Dauer (-1 = läuft/unbekannt), Zeit im Ablauf
@@ -352,6 +353,7 @@
     this.agg += (aggT - this.agg) * this.kAgg;
     var tgtVol = (vc > 1 ? 1 : vc) * vk * boost * (c.duck ? DUCK_GAIN : 1) * (1 + (this.agg < 0 ? 0.3 : 0.2) * this.agg);
     // Hüllkurve des Pegels (Spitze je Block, ~300 ms Abklingen) -> Kompressionsfaktor
+    this.pkEnv = this.prePk > this.pkEnv ? this.prePk : this.pkEnv * this.kPk;   // Spitze vor der Lautstärke (für den Begrenzer)
     var lev = this.prePk * vk * HEADROOM * boost; this.prePk = 0;
     this.cEnv = lev > this.cEnv ? lev : this.cEnv * this.kRel;
     var cg = (this.cEnv > COMP_T ? Math.pow(COMP_T / this.cEnv, COMP_EXP) : 1) * COMP_MAKEUP;
@@ -377,6 +379,10 @@
     // Verstärkung und misst den Pegel währenddessen schon mit, sonst käme der erste Zündimpuls als Knall durch
     this.runG += ((p.kind === 'electric' || this.rpm > 30 ? 1 : 0) - this.runG) * this.kRun;
     var newAmp = this.gain * this.vol * HEADROOM * this.comp * this.runG * (1 + RPM_LIFT * xr * Math.sqrt(xr)) * (1 + spdG * smooth(spd));
+    // Begrenzer: zu laute Stellen als Ganzes leiser stellen, statt die Wellen abzuschneiden (das klingt rau, wie Kratzen).
+    // Über LIM_FROM wächst die Spitze nur noch mit LIM_SLOPE: Lautes bleibt lauter als Leises (Last/Schub, Sport/Comfort).
+    var pk = newAmp * this.pkEnv;
+    if (pk > LIM_FROM) newAmp = (LIM_FROM + (pk - LIM_FROM) * LIM_SLOPE) / this.pkEnv;
     if (newAmp < 1e-5 && tgtGain === 0) newAmp = 0;
     this.ampStep = (newAmp - this.amp) / CR;
     if (p.kind === 'electric') this._controlElec(); else this._controlComb();
