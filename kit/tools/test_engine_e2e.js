@@ -98,7 +98,7 @@ setTimeout(() => {
   const st = eng.status();
   ok(st.playing && /smartx/.test(st.backend || ''), 'Ton läuft über den SmartX-Player (' + st.backend + ')');
   ok(st.outRate === 24000 && st.outCh === 1, 'Format 24 kHz mono');
-  ok(st.bufMs === 30, 'Puffergröße vom Player übernommen (' + st.bufMs + ' ms)');
+  ok(st.bufMs === 60, 'Puffergröße vom Player übernommen (' + st.bufMs + ' ms)');
   ok(st.rt === 'ja', 'Echtzeit-Meldung des Players übernommen (' + st.rt + ')');
 }, 5000);
 
@@ -116,7 +116,7 @@ setTimeout(() => {
   delays.sort((a, b) => a - b);
   const d50 = delays[Math.floor(delays.length * 0.5)], d95 = delays[Math.floor(delays.length * 0.95)];
   console.log('     Verzögerung Synthese -> Lautsprecher (Leitung + Puffer): Median ' + d50.toFixed(0) + ' ms, 95 % ' + d95.toFixed(0) + ' ms');
-  ok(p95 <= 35, 'Soundkarten-Puffer bleibt bei ~30 ms');
+  ok(p95 <= 66, 'Soundkarten-Puffer bleibt bei ~60 ms (zählt zum Vorlauf)');
   ok(d95 <= lead + 25 && d50 >= 20, 'Gesamtverzögerung bleibt beim Vorlauf (95 % ≤ Vorlauf + 25 ms)');
   const under = eng.status().underruns;
   ok(under <= 3, 'kaum Aussetzer (' + under + ')');

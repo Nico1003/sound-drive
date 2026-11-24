@@ -1,15 +1,15 @@
 {
   "id": "iconix_sounds",
   "title": "Sound Drive",
-  "description": "Virtueller Motorsound abhängig von Drehzahl und Last: Street Four, Power Four (auf den 220d abgestimmt), Sport Four, Supra Turbo, Rally Five, Flat Four, Muscle V8 und Track V10. Ton über die Fahrzeuglautsprecher (Audiomanager + SmartX), startet mit dem Auto. Braucht das Tool Sound Drive Audio.",
-  "version": "1.0.5",
+  "description": "Virtueller Motorsound abhängig von Drehzahl und Last: Power Four, Supra, Flat Four, Flat Six, Rally Five, Muscle V8, Track V10 und Grand V12. Ton über die Fahrzeuglautsprecher (Audiomanager + SmartX), startet mit dem Auto. Braucht das Tool Sound Drive Audio.",
+  "version": "1.0.6",
   "vendor": "custom",
   "loggingId": "ICXS",
   "iconGlyph": "engine",
   "mguHmi": ["ID7", "ID8"],
   "autostart": true,
   "requires": {
-    "iconix-audiod": "1.0.5"
+    "iconix-audiod": "1.0.6"
   },
   "signals": {
     "de.bmw.infotainment.vehicle.CDS": {
@@ -51,6 +51,7 @@
       "name": "MAIN",
       "kind": "canvas",
       "title": "Sound Drive",
+      "barEqual": true,
       "buttons": [
         ["BTN_PROFILE", "Sound wechseln"],
         ["BTN_MUTE", "Stumm / Ton an"],
@@ -72,15 +73,16 @@
       "label": "Sound-Profil",
       "type": "choice",
       "default": "turbo4",
+      "aliases": {"diesel4": "turbo4", "turbo4s": "turbo4"},
       "options": [
-        ["turbo4", "Street Four (Turbo-Vierzylinder)"],
-        ["diesel4", "Power Four (fuer den 220d)"],
-        ["turbo4s", "Sport Four"],
-        ["supra", "Supra Turbo"],
-        ["turbo5", "Rally Five (Fuenfzylinder)"],
+        ["turbo4", "Power Four"],
+        ["supra", "Supra (Reihensechser)"],
         ["boxer", "Flat Four (Boxer)"],
+        ["boxer6", "Flat Six (Boxer)"],
+        ["turbo5", "Rally Five (Fuenfzylinder)"],
         ["v8", "Muscle V8"],
-        ["v10", "Track V10"]
+        ["v10", "Track V10"],
+        ["v12", "Grand V12"]
       ]
     },
     {

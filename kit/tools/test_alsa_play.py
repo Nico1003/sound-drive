@@ -6,8 +6,10 @@ simuliertes select(). Prüft die Wiedergabe-Schleife "play":
   - stockt der Dienst, legt der Player Stille nach (statt leerzulaufen) und meldet "underrun"
 Aufruf:  python kit/tools/test_alsa_play.py
 """
+import array
 import importlib.util
 import io
+import math
 import os
 import sys
 import tempfile
@@ -155,6 +157,19 @@ def main():
     vals = [int(l[2:]) for l in rep.split('\n') if l.startswith('P ')]
     ok = bool(vals) and max(vals) <= frames
     print(('ok  ' if ok else 'FAIL') + ' Rückmeldung ohne nachgelegte Stille (höchstens %d, gemeldet %d)' % (frames, max(vals or [0])))
+    fails += not ok
+    # kein Knacken: an den Rändern des Stockens keine Sprünge (leiser Sinus, größter Schritt zwischen zwei Samples)
+    sine = b''.join(int(9000 * math.sin(2 * math.pi * 90 * i / RATE)).to_bytes(2, 'little', signed=True) for i in range(frames))
+    rc, pcm, rep, err = run(sine, stall_reads=set(range(5, 40)))
+    x = array.array('h', bytes(pcm.out))
+    step = max(abs(x[i] - x[i - 1]) for i in range(pre + 50, len(x)))
+    ok = rc == 0 and 'underrun' in err and step < 700   # 90 Hz: normal 212 je Sample; harte Stille spränge um bis zu 9000
+    print(('ok  ' if ok else 'FAIL') + ' Stocken ohne Knacken (größter Sprung %d)' % step)
+    fails += not ok
+    # Stocken in der Stille hört man nicht: nicht als Aussetzer zählen
+    rc, pcm, rep, err = run(bytes(frames * 2), stall_reads=set(range(5, 40)))
+    ok = rc == 0 and 'underrun' not in err
+    print(('ok  ' if ok else 'FAIL') + ' Stocken in der Stille zählt nicht')
     fails += not ok
     # zwei getrennte Hänger -> genau zwei Meldungen (je Stocken eine), Daten trotzdem vollständig
     rc, pcm, rep, err = run(payload, stall_reads=set(range(4, 9)) | set(range(14, 19)))

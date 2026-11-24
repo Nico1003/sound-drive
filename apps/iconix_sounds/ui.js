@@ -46,7 +46,7 @@
   var X1_NARROW = 1132, X1_WIDE = 1572;
   // Lautstärke als senkrechte Leiste rechts (VOLW breit): [+] oben, Regler, [−] unten. Die Sound-Knöpfe nutzen die
   // ganze Höhe darunter (4 Reihen à CH) und sind so während der Fahrt leichter zu treffen.
-  var VOLW = 100, VGAP = 24, VB = 66;   // Breite der Leiste, Abstand zu den Knöpfen, Höhe der −/+-Knöpfe
+  var VOLW = 88, VGAP = 24, VB = VOLW;   // Breite der Leiste, Abstand zu den Knöpfen; −/+ quadratisch
   var CHIP_Y = 108, BOTTOM = 510, RGAP = 10, CH = (BOTTOM - CHIP_Y - 3 * RGAP) / 4;
   var X0 = 488, X1 = X1_NARROW, COLS = 2, GAP = 16, VX = X1 - VOLW, CW = (VX - VGAP - X0 - GAP) / 2;
   function setWide(wide) { X1 = wide ? X1_WIDE : X1_NARROW; VX = X1 - VOLW; CW = (VX - VGAP - X0 - GAP) / 2; }
@@ -76,7 +76,7 @@
     ];
   }
   // Regler der Lautstärke (zwischen [+] und [−]): Bahn von T0 (100 %) bis T1 (0 %)
-  var T0 = CHIP_Y + VB + 66, T1 = BOTTOM - VB - 18;
+  var T0 = CHIP_Y + VB + 70, T1 = BOTTOM - VB - 20;
   /**
    * Lautstärke unter dem Finger (0..1), wenn (x, y) auf dem Regler liegt (die ganze Fläche zwischen [+] und [−],
    * etwas breiter als die Leiste), sonst -1. clamp: Finger außerhalb (beim Ziehen) auf den Rand begrenzen.
@@ -103,9 +103,8 @@
     if (!p) return '';
     if (p.kind === 'electric') return 'Elektro';
     var n = p.layout ? p.layout.length : 0;
-    var v = { v8: 'V8', v10: 'V10', boxer: 'Boxer · 4 Zylinder' }[p.id];
-    // "Turbo" und Zusatz aus dem Profil (nicht aus dem Namen – die Namen sagen das nicht mehr)
-    return (v || (n ? n + ' Zylinder' : '')) + (p.aspiration === 'turbo' ? ' · Turbo' : '') + (p.tag ? ' · ' + p.tag : '');
+    var v = { v8: 'V8', v10: 'V10', v12: 'V12', boxer: 'Boxer · 4 Zylinder', boxer6: 'Boxer · 6 Zylinder' }[p.id];
+    return v || (n ? n + ' Zylinder' : '');
   }
 
   // Statuszeile auf höchstens zwei Zeilen à n Zeichen umbrechen (an " · ")
@@ -179,7 +178,7 @@
     g.line(cxv, yTop + VB / 2 - 14, cxv, yTop + VB / 2 + 14, 3.5, C.text);
     tile(g, vx, yBot - VB, VOLW, VB, 8, C.panel, C.edge);                  // [−]
     g.line(cxv - 14, yBot - VB / 2, cxv + 14, yBot - VB / 2, 3.5, C.text);
-    g.text('Lautstärke', cxv, yTop + VB + 24, 16, C.dim, 'center', 'light');
+    g.text('Lautstärke', cxv, yTop + VB + 24, 15, C.dim, 'center', 'light');
     g.text(s.enabled ? pct(s.volume) : 'Stumm', cxv, yTop + VB + 50, 24, s.enabled ? C.text : C.warn, 'center', 'light');
     var t0 = T0, t1 = T1;                                                  // Regler von unten (0) nach oben (100 %)
     g.rrect(cxv - 3, t0, 6, t1 - t0, 3, C.track);
@@ -212,10 +211,9 @@
     }
     ang = A0 + span * frac; cs = Math.cos(ang); sn = Math.sin(ang);
     g.line(cx + cs * (r - 30), cy + sn * (r - 30), cx + cs * (r + 10), cy + sn * (r + 10), 4, frac > redFrom ? C.crit : "#ffffff"); // kurz: verdeckt die Ziffern nicht
-    // Ziffern in der Mitte, Tempo unten in der Öffnung der Skala
-    g.text(String(Math.round(rpm)), cx, cy + 20, 78, C.text, 'center', 'light');
-    g.text('1/min', cx, cy + 54, 20, C.faint, 'center', 'light');
-    g.text(Math.round(s.speed || 0) + ' km/h', cx, cy + 150, 30, C.text, 'center', 'light');
+    // in der Mitte das Tempo; die Drehzahl zeigt nur die Nadel
+    g.text(String(Math.round(s.speed || 0)), cx, cy + 20, 78, C.text, 'center', 'light');
+    g.text('km/h', cx, cy + 54, 22, C.dim, 'center', 'light');
   }
 
   // s.diag = { lines: [...], page: 0 }

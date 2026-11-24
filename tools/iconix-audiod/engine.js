@@ -30,13 +30,19 @@ const LEAD_MS = Number(process.env.ICONIX_LEAD_MS) || 160;
 const FB_LEAD_MS = Number(process.env.ICONIX_FB_LEAD_MS) || 60;
 const FB_LEAD_MAX = 200;
 // Start großzügig (Head Unit beim Hochfahren ausgelastet -> sonst Aussetzer/Quietschen), danach alle 10 s
-// ohne Aussetzer 10 ms knapper bis FB_LEAD_MS; bei einem Aussetzer sofort +30 ms.
+// ohne Aussetzer 10 ms knapper bis zur Untergrenze; bei einem Aussetzer sofort +30 ms.
+// Die Untergrenze merkt sich, wo es zu knapp war (Vorlauf beim Aussetzer + 20 ms): Früher ging es nach jedem Aussetzer
+// wieder bis 60 ms hinunter – bis zum nächsten, also rund alle 30 s einer (62 in 33 min). Sie sinkt nur alle
+// FB_FLOOR_MS ohne Aussetzer um 10 ms.
 const FB_LEAD_START = 100;
+const FB_FLOOR_MS = 600000;
 const BUFFER_US = Number(process.env.ICONIX_BUFFER_US) || 200000; // Puffer des Abspielprogramms
 const STALE_MS = 1500;       // ohne Daten -> ausblenden
 const IDLE_STOP_MS = Number(process.env.ICONIX_IDLE_STOP_MS) || 30000;  // so lange still -> Abspielprogramm beenden (gibt das Audiogerät frei); kurz = Neustart bei jedem Halt
 const MAX_CHUNK = 4096;
-const SMARTX_BUFFER_US = Number(process.env.ICONIX_SMARTX_BUFFER_US) || 30000; // SmartX: kurzer Puffer
+// SmartX: Puffer des Kanals. Zählt zum Vorlauf (kein zusätzlicher Verzug), gibt dem Player aber Luft; nimmt der Kanal
+// ihn nicht, gilt der kleinere (alsa_play.py)
+const SMARTX_BUFFER_US = Number(process.env.ICONIX_SMARTX_BUFFER_US) || 60000;
 const SMARTX_RETRY_MS = 3000; // SmartX-Kanal ließ sich nicht öffnen -> so oft erneut probieren
 
 // ---------------------------------------------------------------------------
@@ -295,8 +301,10 @@ Output.prototype.start = function () {
   });
   child.stdin.on('error', function () { /* EPIPE -> exit folgt */ });
   child.stdin.on('drain', function () { self.blocked = false; });
-  child.on('error', function (e) { self.lastErr = e.message; });
-  child.on('exit', function (code, sig) {
+  // ließ sich das Programm gar nicht starten, kommt nur 'error' und kein 'exit' – sonst gälte es für immer als laufend
+  child.on('error', function (e) { self.lastErr = e.message; if (!child.pid) gone('-', e.code || e.message); });
+  child.on('exit', gone);
+  function gone(code, sig) {
     log(b.name + ' beendet, code ' + code + ' signal ' + sig);
     if (self.child === child) {
       self.child = null;
@@ -308,13 +316,13 @@ Output.prototype.start = function () {
       self.stopping = false;
       self.onState();
     }
-  });
+  }
   this.onState();
   return true;
 };
 
 Output.prototype.stop = function () {
-  if (!this.child) return;
+  if (!this.child || this.stopping) return;
   this.stopping = true;
   try { this.child.stdin.end(); } catch (e) { /* egal */ }
   const c = this.child;
@@ -429,7 +437,8 @@ function Engine(opts) {
   this.testUntil = 0; this.testStart = 0;
   this.silentSince = 0;
   this.t0 = 0; this.written = 0;
-  this.lastTick = Date.now(); this.late = 0;
+  this.lastTick = Date.now(); this.late = 0; this.gapMs = 0;   // verspätete Takte, längste Pause zwischen zwei Takten
+  this.fbFloor = FB_LEAD_MS; this.fbFloorAt = 0;
   this.f32 = new Float32Array(MAX_CHUNK * 2);
   this.timer = null;
 }
@@ -546,7 +555,7 @@ Engine.prototype.status = function () {
     ok: !out.error,
     backend: out.backend || (out.list[0] && !out.error ? out.list[0].name : null),
     rate: RATE, playing: !!out.child, error: out.error, profile: this.synth.pending || this.synth.cfg.profile,
-    underruns: out.underruns || 0, late: this.late, bufMs: out.child ? out.bufMs || null : null, rt: out.child ? out.rt || null : null, ducked: !!this.synth.cfg.duck, leadMs: out.played != null && out.child ? (this.fbLead || FB_LEAD_MS) : LEAD_MS,
+    underruns: out.underruns || 0, late: this.late, gapMs: this.gapMs, bufMs: out.child ? out.bufMs || null : null, rt: out.child ? out.rt || null : null, ducked: !!this.synth.cfg.duck, leadMs: out.played != null && out.child ? (this.fbLead || FB_LEAD_MS) : LEAD_MS,
     players: out.list.map(function (b) { return b.name; }),
     device: this.device, resolved: out.opts.device, python: findPython(),
     wants: !!this.wantSound, outRate: out.fmt.rate, outCh: out.fmt.ch,
@@ -592,6 +601,8 @@ Engine.prototype.stop = function () {
 Engine.prototype._tick = function () {
   const now = Date.now(), synth = this.synth, out = this.out;
   // zählt Wakeups, die so spät kamen, dass der Vorlauf aufgebraucht war
+  if (out.child && this.ticking) this.gapMs = Math.max(this.gapMs, now - this.lastTick);
+  this.ticking = !!out.child;
   if (out.child && now - this.lastTick > (out.played != null ? (this.fbLead || FB_LEAD_START) : LEAD_MS)) this.late++;
   this.lastTick = now;
   if (this.devTest && now >= this.devTest.until) this._nextTestDevice();
@@ -621,11 +632,11 @@ Engine.prototype._tick = function () {
   if (wantSound && !out.child && !out.error) {
     if (out.start()) { this.t0 = now; this.written = 0; }
   }
-  if (out.child && this.silentSince && now - this.silentSince > IDLE_STOP_MS && synth.gain < 0.001) {
+  if (out.child && !out.stopping && this.silentSince && now - this.silentSince > IDLE_STOP_MS && synth.gain < 0.001) {
     this.log('still – gebe Audiogerät frei');
     out.stop();
   }
-  if (!out.child) return;
+  if (!out.child || out.stopping) return;
 
   const step = out.step();
   let due;
@@ -640,8 +651,12 @@ Engine.prototype._tick = function () {
     if (this.fbLead == null) { this.fbLead = Math.max(FB_LEAD_MS, FB_LEAD_START); this.fbUnder = out.underruns || 0; this.fbCalm = now; }
     if ((out.underruns || 0) > this.fbUnder) {
       this.fbUnder = out.underruns; this.fbCalm = now;
+      this.fbFloor = Math.min(FB_LEAD_MAX, Math.max(this.fbFloor, this.fbLead + 20)); this.fbFloorAt = now;
       if (this.fbLead < FB_LEAD_MAX) { this.fbLead = Math.min(FB_LEAD_MAX, this.fbLead + 30); this.log('Aussetzer – Vorlauf jetzt ' + this.fbLead + ' ms'); }
-    } else if (now - this.fbCalm > 10000 && this.fbLead > FB_LEAD_MS) { this.fbLead = Math.max(FB_LEAD_MS, this.fbLead - 10); this.fbCalm = now; }
+    } else {
+      if (this.fbFloor > FB_LEAD_MS && now - this.fbFloorAt > FB_FLOOR_MS) { this.fbFloor = Math.max(FB_LEAD_MS, this.fbFloor - 10); this.fbFloorAt = now; }
+      if (now - this.fbCalm > 10000 && this.fbLead > this.fbFloor) { this.fbLead = Math.max(this.fbFloor, this.fbLead - 10); this.fbCalm = now; }
+    }
     // nie negativ: meldet der Player mehr, als wir geschrieben haben (Rundung, alter Player), schriebe der Dienst
     // sonst dauerhaft über den Vorlauf hinaus vor – mehr Verzögerung
     const queued = Math.max(0, this.written / step - out.played);
@@ -676,6 +691,8 @@ Engine.prototype._rebuildSynth = function (rate) {
   // ein angefordertes, noch nicht übernommenes Profil (pending) gilt – sonst spielte nach dem Start das alte weiter
   s._setProfile(old.pending || old.cfg.profile); s._reset();
   s.target = Object.assign({}, old.target); s.stale = old.stale;
+  // Motorstart gerade erkannt, während der Player startet: Startsound nicht verlieren
+  s.offTime = old.offTime; s.startT = old.startT;
   this.synth = s;
   this.log('Synthese mit ' + rate + ' Hz');
 };
@@ -888,5 +905,5 @@ module.exports = {
   probeSmartx: probeSmartx, smartxLines: smartxLines, usable: usable,
   Engine: Engine, Output: Output, candidates: candidates, toPcm: toPcm, toPcmFmt: toPcmFmt, Decimator: Decimator, sweepAt: sweepAt,
   smartxEndpoints: smartxEndpoints, resolveSmartx: resolveSmartx, formatOf: formatOf, isSmartx: isSmartx,
-  RATE: RATE, TICK_MS: TICK_MS, LEAD_MS: LEAD_MS, FB_LEAD_MS: FB_LEAD_MS, FB_LEAD_START: FB_LEAD_START, MAX_CHUNK: MAX_CHUNK
+  RATE: RATE, TICK_MS: TICK_MS, LEAD_MS: LEAD_MS, FB_LEAD_MS: FB_LEAD_MS, FB_LEAD_START: FB_LEAD_START, FB_LEAD_MAX: FB_LEAD_MAX, FB_FLOOR_MS: FB_FLOOR_MS, MAX_CHUNK: MAX_CHUNK
 };

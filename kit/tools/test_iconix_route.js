@@ -157,9 +157,9 @@ test('SmartX: Kanal auflösen, Format aus dem Namen, kein Rückfall auf andere G
   process.env.ICONIX_PYTHON = process.execPath; // irgendein vorhandenes Programm als "Python"
   const c = E.candidates({ device: 'plug:smartx:CarLifeMedia_CF_48_STEREO' });
   assert.strictEqual(c.length, 1);
-  assert.deepStrictEqual(c[0].argv.slice(1), ['play', 'plug:smartx:CarLifeMedia_CF_48_STEREO', '48000', '30000', '2']);
+  assert.deepStrictEqual(c[0].argv.slice(1), ['play', 'plug:smartx:CarLifeMedia_CF_48_STEREO', '48000', '60000', '2']);
   const m = E.candidates({ device: 'plug:smartx:Media_Overlay_Converter_Source_CF_24_MONO' });
-  assert.deepStrictEqual(m[0].argv.slice(3), ['24000', '30000', '1']);
+  assert.deepStrictEqual(m[0].argv.slice(3), ['24000', '60000', '1']);
 });
 
 test('Umrechnung 48 -> 24 kHz: Tiefpass gegen Aliasing, tiefe Töne bleiben', () => {
@@ -349,7 +349,7 @@ test('Autostart: App hat einen Hintergrund-Einstieg (background) und app.json au
   assert.strictEqual(JSON.parse(fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/app.json'), 'utf8')).autostart, true);
 });
 
-test('Vorlauf: Start 100 ms, Aussetzer +30 ms, ruhig wieder knapper bis 50 ms', () => {
+test('Vorlauf: Start 100 ms, Aussetzer +30 ms, ruhig wieder knapper – aber nicht wieder bis zum nächsten Aussetzer', () => {
   const eng = new E.Engine({ log() {} });
   eng.out = { child: {}, blocked: false, fmt: { rate: 24000, ch: 1 }, step: E.Output.prototype.step, list: [], opts: { device: 'x' },
     played: 0, underruns: 0, write() { return true; }, start() { return true; }, stop() {} };
@@ -363,7 +363,14 @@ test('Vorlauf: Start 100 ms, Aussetzer +30 ms, ruhig wieder knapper bis 50 ms', 
     eng.out.underruns = 1; eng.lastParams = t; eng._tick();
     assert.strictEqual(eng.fbLead, E.FB_LEAD_START + 30);
     for (let i = 0; i < 40; i++) { t += 11000; eng.lastParams = t; eng._tick(); }
+    assert.strictEqual(eng.fbLead, E.FB_LEAD_START + 20, 'bleibt über dem Wert, der zu knapp war');
+    // ohne Aussetzer sinkt die Untergrenze langsam (alle 10 min) bis zum Minimum
+    for (let i = 0; i < 60 * 12; i++) { t += 11000; eng.lastParams = t; eng._tick(); }
     assert.strictEqual(eng.fbLead, E.FB_LEAD_MS);
+    // 33 Minuten Fahrt, Head Unit hängt alle 20 s kurz 85 ms: früher rund alle 30 s ein Aussetzer, jetzt eine Handvoll
+    const e2 = new E.Engine({ log() {} }); e2.out = Object.assign({}, eng.out, { underruns: 0 }); e2.synth.configure({ enabled: true });
+    for (let s = 0; s < 33 * 60; s++) { t += 1000; e2.lastParams = t; if (s % 20 === 19 && (e2.fbLead || 100) < 85) e2.out.underruns++; e2._tick(); }
+    assert.ok(e2.out.underruns <= 3, 'Aussetzer in 33 min: ' + e2.out.underruns);
   } finally { Date.now = realNow; }
 });
 
@@ -415,9 +422,9 @@ test('Einstellungen: Telefon/Ansagen-Option, Experten- und Motor-Gruppe, Gerät 
   assert.ok(!by.dialVolume);
 });
 
-test('Profile: Turbo-Auswahl (Standard Street Four), kein Sechser/Dezent/Elektro mehr', () => {
+test('Profile: Auswahl (Standard Power Four), kein Sechser/Dezent/Elektro mehr', () => {
   assert.strictEqual(Profiles.DEFAULT, 'turbo4');
-  assert.deepStrictEqual(Profiles.ids, ['turbo4', 'diesel4', 'turbo4s', 'supra', 'turbo5', 'boxer', 'v8', 'v10']);
+  assert.deepStrictEqual(Profiles.ids, ['turbo4', 'supra', 'boxer', 'boxer6', 'turbo5', 'v8', 'v10', 'v12']);
   assert.strictEqual(Profiles.get('subtle').id, 'turbo4', 'alte gespeicherte Auswahl fällt auf den Standard zurück');
   assert.ok(Profiles.list.every((p) => p.kind === 'combustion' && p.desc));
   const j = JSON.parse(fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/app.json'), 'utf8'));
@@ -467,9 +474,9 @@ test('Oberfläche: Profil-Knöpfe zwei je Reihe, groß, bis unten; Lautstärke s
   assert.ok(last.y + last.h >= 500 && last.y + last.h <= 516, 'unterste Reihe reicht bis unten: ' + (last.y + last.h));
   const vp = all.find((h) => h.key === 'vol+'), vm = all.find((h) => h.key === 'vol-');
   assert.ok(vp.x > chips[1].x + chips[1].w && vm.x === vp.x && vp.y < vm.y, 'Lautstärke als Leiste rechts: + oben, − unten');
-  [vp, vm].forEach((h) => assert.ok(h.w >= 60 && h.h >= 60));
+  [vp, vm].forEach((h) => assert.ok(h.w >= 80 && h.w === h.h, 'quadratisch: ' + h.w + 'x' + h.h));
   // schmale Ansicht: alles noch bedienbar groß
-  UI.hits(Profiles.list, false).forEach((h) => assert.ok(h.w >= 90 && h.h >= 60 && h.x + h.w <= 1140, h.key));
+  UI.hits(Profiles.list, false).forEach((h) => assert.ok(h.w >= 80 && h.h >= 60 && h.x + h.w <= 1140, h.key));
   assert.strictEqual(chips.length, 8, 'acht Sounds = vier volle Reihen');
 });
 
@@ -490,25 +497,6 @@ test('Lautstärke-Regler: antippen und ziehen', () => {
   const src = fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/main.js'), 'utf8');
   assert.ok(/ctx\.onTouch\(/.test(src) && /UI\.volAt\(/.test(src), 'Ziehen über ctx.onTouch');
   assert.ok(/Math\.round\(f \* 20\) \* 5/.test(src), 'rastet in 5-%-Schritten (Auswahl in den Einstellungen)');
-});
-
-test('Power Four (220d): wie Street Four, aber kräftiger und ohne Traktor-Brummen', () => {
-  const d = Profiles.get('diesel4'), t = Profiles.get('turbo4');
-  assert.strictEqual(d.id, 'diesel4');
-  assert.deepStrictEqual(d.layout, t.layout, 'Vierzylinder-Zündfolge');
-  assert.ok(d.unev < t.unev && d.variance < t.variance && d.idleRip < 1, 'weniger Brummen und Rütteln');
-  assert.ok(d.boomDb > t.boomDb && d.displacement > t.displacement, 'mehr Bass und Fülle');
-  const vr = (p) => { const s = new Synth(24000); s.configure({ profile: p, carIdle: 800, carRedline: 4800 }); s._setProfile(p); return s._virtualRpm(2000); };
-  assert.ok(vr('diesel4') > vr('turbo4'), 'höhere Tonlage im Diesel-Fahrbereich');
-  // Konstantfahrt 1900 U/min: mindestens so laut wie Street Four
-  const lvl = (p) => { const s = new Synth(24000); s.configure({ profile: p, volume: 0.8, enabled: true }); s._setProfile(p);
-    const f = new Float32Array(4800); let sum = 0, n = 0;
-    for (let k = 0; k < 60; k++) { s.setParams({ rpm: 1900, load: 0.3, speed: 90 }); s.render(f, 2400); if (k > 30) for (let i = 0; i < 4800; i += 2) { sum += f[i] * f[i]; n++; } }
-    return Math.sqrt(sum / n); };
-  const ld = lvl('diesel4'), lt = lvl('turbo4');
-  assert.ok(ld >= lt * 0.95, 'Konstantfahrt ' + ld.toFixed(3) + ' vs ' + lt.toFixed(3));
-  const app = JSON.parse(fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/app.json'), 'utf8'));
-  assert.ok(app.settings.find((x) => x.key === 'profile').options.some((o) => o[0] === 'diesel4'), 'in den Einstellungen wählbar');
 });
 
 test('Lautstärke: 100 % klingt wie früher 150 %', () => {
@@ -781,6 +769,99 @@ test('Lautstärkeknopf: Lautstärke-Sprung des Autos beim Verbinden/Trennen ist 
   assert.ok(r.knobIgnored >= 1, 'Sprünge des Autos gezählt (' + r.knobIgnored + ')');
 });
 
+test('Lautstärkeknopf: Ansage (großer Sprung oder neue Verbindung) ist kein Dreh – der Sound bleibt', async () => {
+  const { am, signals } = fakeAm({ conns: [{ mainConnectionID: 1, sourceID: 12, sinkID: 1024, connectionState: 2 }] });
+  const r = new CarRoute(signals, quiet, null);
+  r.want('overlay', true);
+  await r._step(); await r._pollDuck(); await r._knobTick(); r.knobQuiet = 0;
+  am.vol = 9; await r._knobTick();                    // Log aus dem Auto: 34 -> 23
+  assert.ok(!r.knobHeld(), 'großer Sprung = Auto');
+  am.vol = 20; await r._knobTick();
+  assert.ok(!r.knobHeld());
+  am.conns.push({ mainConnectionID: 9, sourceID: 77, sinkID: 1024, connectionState: 2 });   // Ansage, kleine Änderung
+  am.vol = 18; await r._knobTick();
+  assert.ok(!r.knobHeld(), 'neue Verbindung = Ansage');
+  r.othersAt = 0; am.vol = 19; await r._knobTick();   // danach ein echter Dreh
+  assert.ok(r.knobHeld());
+});
+
+test('Synth: Drehzahl kommt nur 10x je Sekunde – der Ton klettert ohne Stufen und ohne Überschwingen', () => {
+  const s = new Synth(24000); s.configure({ profile: 'boxer', volume: 0.4, enabled: true, carIdle: 800, carRedline: 4800 }); s._setProfile('boxer');
+  const f = new Float32Array(480), v = [];
+  const truth = (t) => (t < 1 ? 1500 : t < 4 ? 1500 + 800 * (t - 1) : 3900);
+  for (let k = 0; k < 600; k++) { if (k % 10 === 0) s.setParams({ rpm: truth(k / 100), load: 0.5, speed: 60 }); s.render(f, 240); v.push(s.rpm); }
+  let jerk = 0; for (let i = 150; i < 390; i++) jerk += Math.abs((v[i] - v[i - 1]) - (v[i - 1] - v[i - 2]));
+  assert.ok(jerk / 240 < 3, 'Stufigkeit ' + (jerk / 240).toFixed(1) + ' (ohne Fortschreiben ~7)');
+  const lag = s._virtualRpm(truth(3)) - v[300];
+  assert.ok(Math.abs(lag) < 60, 'hängt kaum nach: ' + lag.toFixed(0));
+  assert.ok(Math.max(...v) - s._virtualRpm(3900) < 120 && Math.abs(v[599] - s._virtualRpm(3900)) < 2, 'kein Überschwingen, ruhiger Endwert');
+});
+
+test('Power Four: oben kräftiger als in der Mitte und nicht nur ein Ton', () => {
+  const run = (rpm) => { const s = new Synth(24000); s.configure({ profile: 'turbo4', volume: 0.4, enabled: true, carIdle: 800, carRedline: 4800, speedVol: 0 }); s._setProfile('turbo4');
+    const f = new Float32Array(4800); let lp = 0, e = 0, lo = 0; const k = 1 - Math.exp(-2 * Math.PI * 130 / 24000);
+    for (let i = 0; i < 40; i++) { s.setParams({ rpm, load: 0.9, speed: 60 }); s.render(f, 2400); if (i > 20) for (let j = 0; j < 4800; j += 2) { lp += (f[j] - lp) * k; lo += lp * lp; e += f[j] * f[j]; } }
+    return { rms: Math.sqrt(e), low: lo / e }; };
+  const m = run(3000), h = run(4500);
+  assert.ok(h.rms > m.rms, 'oben lauter: ' + h.rms.toFixed(1) + ' > ' + m.rms.toFixed(1));
+  assert.ok(h.low > 0.25, 'Fülle unter der Zündfrequenz: ' + h.low.toFixed(2));
+});
+
+test('App: "background" gibt es nur einmal (der zweite Eintrag gewänne still)', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/main.js'), 'utf8');
+  assert.strictEqual(src.split(/\n  background\(bg\)/).length - 1, 1);
+});
+
+test('Tempo: läuft beim Segeln (Motor aus, keine Drehzahl-Meldungen) weiter', () => {
+  const VehicleFeed = require(path.join(ROOT, 'apps/iconix_sounds/vehicle_feed.js'));
+  const h = {};
+  const feed = new VehicleFeed({ watch: async (i, n, x) => { Object.assign(h, x); return {}; } }, quiet, () => ({ loadSource: 'auto', maxTorque: 400, carIdle: 800 }));
+  feed.start();
+  const realNow = Date.now; let t = 2e12; Date.now = () => t;
+  try {
+    h.statusCarSpeed2({ speedVehicleCentreOfGravity: 80 / 0.015625 });
+    h.statusEngineSpeed2({ actualValueRPMEngineCrankshaft: 0 });
+    t += 3000; assert.strictEqual(feed.speed(), 80, 'gleichmäßige Fahrt: Wert bleibt');
+    h.statusCarSpeed2({ speedVehicleCentreOfGravity: 75 / 0.015625 });
+    assert.strictEqual(feed.speed(), 75, 'ohne Drehzahl-Meldung aktuell');
+    t += 9000; assert.strictEqual(feed.speed(), 0, 'lange keine Daten');
+  } finally { Date.now = realNow; }
+});
+
+test('Tonweg: veraltete Verbindungsliste wirft eine neue Verbindung nicht weg; Pause wird angezeigt', async () => {
+  const { am, signals } = fakeAm();
+  const r = new CarRoute(signals, quiet, null);
+  r.want('overlay', true); await r._step();
+  const call = signals.call; let release;
+  signals.call = async (p, m, x) => { if (m !== 'getListMainConnections') return call(p, m, x); await new Promise((ok) => { release = ok; }); return { listConnections: [] }; };
+  const poll = r._pollDuck();                          // Abfrage läuft ...
+  while (!release) await new Promise((ok) => setImmediate(ok));
+  signals.call = call;
+  await r._disconnect(); await r._step();              // ... inzwischen getrennt und neu verbunden
+  const fresh = r.conn;
+  release(); await poll;
+  assert.ok(fresh && r.conn === fresh, 'neue Verbindung bleibt');
+  r.knobAt = Date.now(); await r._step(); await r._step();
+  assert.ok(/Pause/.test(r.state), 'Zustand in der Pause: ' + r.state);
+  // übernommene Verbindung, die noch aufgebaut wird: noch nicht hörbar
+  const f2 = fakeAm({ conns: [{ mainConnectionID: 4, sourceID: 1048, sinkID: 1024, connectionState: 1 }] });
+  const r2 = new CarRoute(f2.signals, quiet, null); r2.want('overlay', true); await r2._step();
+  assert.ok(r2.conn && !r2.audible());
+});
+
+test('Dienst: nicht startbares Abspielprogramm gilt nicht als laufend; Startsound übersteht den Player-Start', async () => {
+  const o = new E.Output(() => {}, () => {}, {});
+  o.list = [{ name: 'fehlt', path: path.join(tmp, 'gibt-es-nicht'), argv: [] }];
+  o.error = null; o.start();
+  for (let i = 0; i < 50 && o.child; i++) await new Promise((ok) => setTimeout(ok, 20));
+  assert.ok(!o.child && o.bad.fehlt && /fehlgeschlagen/.test(o.error || ''), String(o.error));
+  const eng = new E.Engine({ log() {} });
+  eng.synth.offTime = 5; eng.synth.setParams({ rpm: 700, load: 0, speed: 0 });
+  assert.strictEqual(eng.synth.startT, 0);
+  eng._rebuildSynth(24000);
+  assert.strictEqual(eng.synth.startT, 0, 'Startsound läuft weiter');
+});
+
 test('Synth: schnell zurück zum laufenden Profil – der angefangene Wechsel wird verworfen', () => {
   const s = new Synth(24000); s.configure({ profile: 'turbo4', enabled: true }); s._setProfile('turbo4');
   s.configure({ profile: 'v10' });
@@ -815,16 +896,22 @@ test('App: Tool älter als die App wird angezeigt', () => {
   assert.ok(/veraltet – bitte auf/.test(src));
 });
 
-test('Profile: neue Namen, Kennungen unverändert (gespeicherte Auswahl bleibt)', () => {
+test('Profile: Namen, Bauart, Umstellung gelöschter Sounds', () => {
   const names = Profiles.list.map((p) => p.name);
-  assert.deepStrictEqual(names, ['Street Four', 'Power Four', 'Sport Four', 'Supra Turbo', 'Rally Five', 'Flat Four', 'Muscle V8', 'Track V10']);
+  assert.deepStrictEqual(names, ['Power Four', 'Supra', 'Flat Four', 'Flat Six', 'Rally Five', 'Muscle V8', 'Track V10', 'Grand V12']);
+  assert.ok(!/turbo/i.test(Profiles.list.map((p) => p.name + p.desc).join()), 'kein "Turbo" in Namen und Beschreibungen');
   const UI = require(path.join(ROOT, 'apps/iconix_sounds/ui.js'));
   const texts = [];
   const g = { rect() {}, rrect() {}, line() {}, arc() {}, text(t) { texts.push(String(t)); } };
-  UI.draw(g, { profiles: Profiles.list, profile: 'diesel4', rpm: 900, volume: 0.8, enabled: true, wide: true, audio: { ok: true, text: 'x' } });
-  assert.ok(texts.includes('4 Zylinder · Turbo · für den 220d'), 'Bauart unter dem Namen: ' + texts.filter((t) => /Zylinder/.test(t)));
+  UI.draw(g, { profiles: Profiles.list, profile: 'boxer6', rpm: 2950, speed: 87, volume: 0.8, enabled: true, wide: true, audio: { ok: true, text: 'x' } });
+  assert.ok(texts.includes('Boxer · 6 Zylinder') && !texts.some((t) => /turbo/i.test(t)), 'Bauart: ' + texts.filter((t) => /Zylinder/.test(t)));
+  // Mitte des Drehzahlmessers: Tempo, keine ausgeschriebene Drehzahl
+  assert.ok(texts.includes('87') && texts.includes('km/h') && !texts.some((t) => /2950|1\/min/.test(t)), texts.join('|'));
   const app = JSON.parse(fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/app.json'), 'utf8'));
-  assert.deepStrictEqual(app.settings.find((x) => x.key === 'profile').options.map((o) => o[0]), Profiles.ids);
+  const ps = app.settings.find((x) => x.key === 'profile');
+  assert.deepStrictEqual(ps.options.map((o) => o[0]), Profiles.ids);
+  assert.deepStrictEqual(ps.aliases, { diesel4: 'turbo4', turbo4s: 'turbo4' }, 'gelöschte Sounds werden umgestellt');
+  assert.strictEqual(app.screens[0].barEqual, true, 'untere Leiste: gleich große Knöpfe');
 });
 
 test('Lautstärkeknopf: Weiterdrehen nach dem Trennen hält die Pause (Sound kommt nicht mitten im Drehen zurück)', async () => {
@@ -837,7 +924,7 @@ test('Lautstärkeknopf: Weiterdrehen nach dem Trennen hält die Pause (Sound kom
   assert.strictEqual(am.conns.length, 0);
   await r._knobTick();                                // Zustand "getrennt" gemerkt (Beruhigung läuft)
   assert.ok(Date.now() < r.knobQuiet, 'Beruhigung läuft');
-  r.knobAt = Date.now() - 1200;                       // 1,2 s nach dem ersten Dreh ...
+  r.knobAt = Date.now() - 600;                        // 0,6 s nach dem ersten Dreh ...
   am.vol = 27; await r._knobTick();                   // ... wird weiter gedreht
   assert.ok(Date.now() - r.knobAt < 100, 'Weiterdrehen zählt auch während der Beruhigung');
   await r._step();
@@ -853,7 +940,7 @@ test('Lautstärkeknopf: Auto ohne Verbindungszustand – Drehen wird trotzdem er
   r.connState = null; r.conn.at = Date.now() - CarRoute.AUDIBLE_AFTER_MS - 10;
   assert.ok(r.audible(), 'nach 8 s hörbar');
   await r._knobTick(); r.knobQuiet = 0;
-  am.vol = 31; await r._knobTick();
+  am.vol = 23; await r._knobTick();
   assert.ok(r.knobHeld(), 'Dreh erkannt, Knopf gehört der Musik');
 });
 

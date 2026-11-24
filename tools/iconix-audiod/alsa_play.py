@@ -12,6 +12,7 @@ Das Head Unit hat libasound und Python 3.12 (mgu-python), aber kein aplay. Diese
 Ausgaben auf stderr in Zeilen wie aplay (z. B. "underrun!!!"), damit engine.js sie zählt.
 Kanonische Quelle: shared/alsa_play.py – Kopie im Tool erzeugt `npm run sync`.
 """
+import array
 import ctypes
 import ctypes.util
 import json
@@ -178,10 +179,97 @@ def realtime():
         return 'nein (%s)' % (getattr(e, 'strerror', None) or e.__class__.__name__)
 
 
+def realtime_parent():
+    """Auch der Dienst (Node, erzeugt den Ton) bekommt Echtzeit-Priorität, unter der des Players: Kommt er auf einem
+    ausgelasteten Head Unit zu spät dran, läuft der Puffer leer (Aussetzer). Nur der Hauptthread, und Kindprozesse
+    erben sie nicht (RESET_ON_FORK). Nur wenn der Dienst es verlangt (ICONIX_RT_PARENT); scheitert es, bleibt alles
+    wie es ist."""
+    if os.environ.get('ICONIX_RT_PARENT') != '1':
+        return None
+    try:
+        pid = os.getppid()
+        if pid <= 1:
+            return None
+        os.sched_setscheduler(pid, os.SCHED_RR | os.SCHED_RESET_ON_FORK, os.sched_param(2))
+        return 'ja'
+    except Exception as e:
+        return 'nein (%s)' % (getattr(e, 'strerror', None) or e.__class__.__name__)
+
+
+class Conceal:
+    """Überbrückt ein Stocken des Dienstes ohne Knacken: Harte Stille mitten im Ton hört man als Kratzen. Stattdessen
+    wird der zuletzt gespielte Ton rückwärts (nahtlos am letzten Wert) fortgesetzt und über FADE_MS ausgeblendet; geht
+    es weiter, blenden die neuen Daten über RESUME_MS ein."""
+    FADE_MS, RESUME_MS = 30, 6
+
+    def __init__(self, rate, channels):
+        self.ch = channels
+        self.keep = max(1, rate * 20 // 1000)
+        self.fade = max(1, rate * self.FADE_MS // 1000)
+        self.resume = max(1, rate * self.RESUME_MS // 1000)
+        self.tail = array.array('h')
+        self.pos, self.active = 0, False
+
+    def remember(self, data):
+        n = self.keep * self.ch * 2
+        if len(data) >= n:
+            self.tail = array.array('h', data[-n:])
+        elif data:
+            self.tail = array.array('h', (self.tail.tobytes() + data)[-n:])
+
+    def audible(self):
+        return any(v > 60 or v < -60 for v in self.tail)
+
+    def start(self):
+        if not self.active:
+            self.active, self.pos = True, 0
+
+    def fill(self, n):
+        """n Frames Fortsetzung (Hin- und Herlaufen im letzten Stück Ton, leiser werdend)."""
+        ch, t = self.ch, self.tail
+        m = len(t) // ch
+        out = array.array('h', bytes(2 * n * ch))
+        if m < 2:
+            self.pos += n
+            return out
+        span = 2 * (m - 1)
+        for i in range(n):
+            p = self.pos + i
+            g = 1.0 - float(p) / self.fade
+            if g <= 0:
+                break
+            k = (p + 1) % span
+            j = (m - 1 - k) if k < m else (k - (m - 1))
+            for c in range(ch):
+                out[i * ch + c] = int(t[j * ch + c] * g)
+        self.pos += n
+        return out
+
+    def join(self, data):
+        """Erste neue Daten nach dem Stocken einblenden (über die auslaufende Fortsetzung)."""
+        if not self.active or not data:
+            return data
+        ch = self.ch
+        a = array.array('h', data)
+        n = min(self.resume, len(a) // ch)
+        if n:
+            f = self.fill(n)
+            for i in range(n):
+                r = (i + 1.0) / n
+                for c in range(ch):
+                    k = i * ch + c
+                    a[k] = int(a[k] * r + f[k] * (1.0 - r))
+        self.active = False
+        return a.tobytes()
+
+
 def cmd_play(dev, rate, latency_us=200000, channels=2):
     lib = load_alsa()
     smartx_lock(dev)
     h, e = open_pcm(lib, dev, rate, latency_us, channels=channels)
+    if not h and latency_us > 30000:
+        # Kanal nimmt den größeren Puffer nicht: mit dem kleinen
+        h, e = open_pcm(lib, dev, rate, 30000, channels=channels)
     if not h:
         sys.stderr.write('alsa_play: %s (%s)\n' % (e, dev))
         sys.stderr.flush()
@@ -189,6 +277,9 @@ def cmd_play(dev, rate, latency_us=200000, channels=2):
     bsize, psize = ctypes.c_ulong(0), ctypes.c_ulong(0)
     lib.snd_pcm_get_params(h, ctypes.byref(bsize), ctypes.byref(psize))
     rt = realtime()
+    rp = realtime_parent()
+    if rp is not None:
+        rt += ', Dienst ' + rp
     sys.stderr.write('alsa_play: spielt auf %s mit %d Hz, %d Kanal/Kanäle, Puffer %d ms, Periode %d ms, Echtzeit %s\n' % (
         dev, rate, channels, bsize.value * 1000 // max(1, rate), psize.value * 1000 // max(1, rate), rt))
     sys.stderr.flush()
@@ -221,6 +312,7 @@ def cmd_play(dev, rate, latency_us=200000, channels=2):
     guard = max(1, rate * 12 // 1000)          # weniger als 12 ms im Puffer -> Stille nachlegen
     fill_n = max(1, rate * 10 // 1000)         # je 10 ms
     zeros = bytes(fill_n * frame_bytes)
+    conceal = Conceal(rate, channels)
     fd = stdin.fileno()
     fills = 0
     stalled = False
@@ -246,13 +338,15 @@ def cmd_play(dev, rate, latency_us=200000, channels=2):
                         lib.snd_pcm_recover(h, int(r), 1)
                         delay.value = 0
                     if delay.value < guard:
-                        w = lib.snd_pcm_writei(h, zeros, fill_n)
+                        conceal.start()
+                        w = lib.snd_pcm_writei(h, conceal.fill(fill_n).tobytes(), fill_n)
                         if w > 0:
                             total += w
                             own += w
                             # je Stocken EINE Meldung (beim ersten Nachlegen), damit der Dienst jedes Mal
-                            # mitzählt und seinen Vorlauf vergrößert – auch nach vielen Aussetzern
-                            if not stalled:
+                            # mitzählt und seinen Vorlauf vergrößert – auch nach vielen Aussetzern. War ohnehin
+                            # Stille (Motor aus, stummgeschaltet), hört man nichts: keine Meldung.
+                            if not stalled and conceal.audible():
                                 fills += 1
                                 sys.stderr.write('underrun!!! (Stille nachgelegt, #%d)\n' % fills)
                                 sys.stderr.flush()
@@ -272,12 +366,12 @@ def cmd_play(dev, rate, latency_us=200000, channels=2):
             data = pending + data
             n = len(data) // frame_bytes
             pending = data[n * frame_bytes:]
-            buf = data[:n * frame_bytes]
+            buf = conceal.join(data[:n * frame_bytes])
             off = 0
             while off < n:
                 w = lib.snd_pcm_writei(h, buf[off * frame_bytes:], n - off)
                 if w < 0:
-                    if w in (-EPIPE, -ESTRPIPE):
+                    if w in (-EPIPE, -ESTRPIPE) and conceal.audible():
                         sys.stderr.write('underrun!!!\n')
                         sys.stderr.flush()
                     r = lib.snd_pcm_recover(h, int(w), 1)
@@ -285,9 +379,14 @@ def cmd_play(dev, rate, latency_us=200000, channels=2):
                         sys.stderr.write('alsa_play: write: %s\n' % err(lib, r))
                         sys.stderr.flush()
                         return 3
+                    # der Ton war weg: den Rest weich einblenden statt mit einem Sprung
+                    conceal.start()
+                    conceal.pos = conceal.fade
+                    buf = buf[:off * frame_bytes] + conceal.join(buf[off * frame_bytes:])
                     continue
                 off += w
                 total += w
+            conceal.remember(buf)
             report()
     except (BrokenPipeError, KeyboardInterrupt):
         pass

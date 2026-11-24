@@ -905,7 +905,7 @@ class Display {
         if (!f) return;
         const right = HMI.screen.w;
         if (f.x + f.w - this.barOff > right) this.barOff = f.x + f.w - right;
-        if (f.x - this.barOff < HMI.btn.x) this.barOff = f.x - HMI.btn.x;
+        if (f.x - this.barOff < HMI.btn.x && !(this.screen.barEqual && this.ownable())) this.barOff = f.x - HMI.btn.x;
         if (this.barOff < 0) this.barOff = 0;
     }
 
@@ -929,12 +929,13 @@ class Display {
     /**
      * The HMI's bar buttons in screen pixels, unscrolled: [{ id, label, x, w }]. Where the kit runs
      * the screen, the bar is its own: the page buttons are left out (the tabs, touched or pushed to
-     * with the controller, turn the pages); they stay in the HMI's bar for the other paths.
+     * with the controller, turn the pages); they stay in the HMI's bar for the other paths. "barEqual": true in
+     * the screen (app.json): there all are equally wide and share the whole width.
      */
     buttons() {
         const own = this.ownable();
-        if (this._btns && this._btnsOwn === own) return this._btns;
-        this._btnsOwn = own;
+        if (this._btns && this._btnsOwn === own && this._btnsHmi === HMI) return this._btns;
+        this._btnsOwn = own; this._btnsHmi = HMI;
         const m = new Recorder(1, 1);
         let x = HMI.btn.x;
         this._btns = (this.screen.buttons || []).filter((b) => !own || (PAGER.indexOf(b[0]) < 0 && b[0] !== 'BTN_SETTINGS' && !this.ownHidden.has(b[0]))).map((b) => {
@@ -944,6 +945,10 @@ class Display {
             x += w;
             return r;
         });
+        if (own && this.screen.barEqual && this._btns.length) {
+            const n = this._btns.length, w = HMI.screen.w / n;
+            this._btns.forEach((b, i) => { b.x = Math.round(i * w); b.w = Math.round((i + 1) * w) - b.x; });
+        }
         return this._btns;
     }
 

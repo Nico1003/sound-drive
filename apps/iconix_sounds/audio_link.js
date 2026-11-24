@@ -151,7 +151,7 @@ class AudioLink extends EventEmitter {
       // Verzögerung und Aussetzer: Vorlauf passt sich an (Start 100 ms, bei ruhigem Lauf bis 60 ms)
       head.push('Ton: Vorlauf ' + (ds.leadMs != null ? ds.leadMs + ' ms' : '?') +
         (ds.bufMs ? ' · ALSA-Puffer ' + ds.bufMs + ' ms' : '') + (ds.rt ? ' · Echtzeit ' + ds.rt : '') +
-        ' · Aussetzer ' + (ds.underruns || 0) + (ds.late ? ' · verspätete Takte ' + ds.late : '') +
+        ' · Aussetzer ' + (ds.underruns || 0) + (ds.late ? ' · verspätete Takte ' + ds.late : '') + (ds.gapMs ? ' · längste Pause ' + ds.gapMs + ' ms' : '') +
         (ds.ducked ? ' · abgesenkt' : ''));
       if (ds.scan) {
         let n = 0;
@@ -236,6 +236,14 @@ class AudioLink extends EventEmitter {
     try { m = JSON.parse(line); } catch (e) { return; }
     if (m.op === 'diag' && Array.isArray(m.lines)) { this.daemonDiag = m.lines; this.emit('diag', m.lines); return; }
     if (m.op !== 'status') return;
+    // neue Aussetzer ins Log der App (höchstens alle 30 s), damit sie im QR-Log mit Uhrzeit stehen
+    const u = m.underruns || 0, now = Date.now();
+    if (u < (this.logDrops || 0)) this.logDrops = u;       // Dienst neu gestartet
+    if (u > (this.logDrops || 0) && now - (this.logDropsAt || 0) > 30000) {
+      this.log.info('iconix: Aussetzer ' + u + ' (+' + (u - (this.logDrops || 0)) + '), Vorlauf ' + m.leadMs + ' ms, ALSA-Puffer ' + (m.bufMs || '?') +
+        ' ms, Echtzeit ' + (m.rt || '?') + ', verspätet ' + (m.late || 0) + ', längste Pause ' + (m.gapMs || 0) + ' ms');
+      this.logDrops = u; this.logDropsAt = now;
+    }
     this.daemonStatus = m;
     this._update();
   }
@@ -244,8 +252,9 @@ class AudioLink extends EventEmitter {
     if (m.devTest) return { ok: true, text: 'Gerätetest ' + m.devTest.i + '/' + m.devTest.n + ': ' + m.devTest.device + ' – hörst du etwas?' };
     if (m.error) return { ok: false, text: prefix + m.error };
     let text = prefix + (m.backend || '?') + ' · ' + khz(m.outRate || m.rate) + ' kHz' + (m.playing ? ' · spielt' : ' · bereit');
-    // Aussetzer (Underruns des Abspielprogramms + verspätete Wakeups) sichtbar machen
-    const drops = (m.underruns || 0) + (m.late || 0);
+    // hörbare Aussetzer (Meldungen des Players). Verspätete Takte des Dienstes stehen nur in der Diagnose: Sie sind die
+    // Ursache derselben Aussetzer – beides zusammen zählte doppelt.
+    const drops = m.underruns || 0;
     if (drops > 0) text += ' · ' + drops + ' Aussetzer';
     return { ok: !!m.backend, text: text };
   }

@@ -58,6 +58,8 @@
   // Kurz und an der echten Drehzahl: 0,25 s Anlasser, danach folgt der Sound sofort dem Motor, nur mit einem
   // kleinen, abklingenden Hochdrehen (sonst wirkt der Start verzögert, weil eine feste Kurve die echte überdeckt)
   var START_CRANK = 0.25, START_END = 1.1;
+  // Fortschreiben der Drehzahl zwischen zwei Meldungen: höchstens RPM_AHEAD, keine Steigung über RPM_GLITCH (U/min je s)
+  var RPM_AHEAD = 180, RPM_GLITCH = 9000, RPM_RATE_MAX = 2500;   // schnellere Wechsel (Schalten) nur gebremst fortschreiben: sonst schwingt der Ton über
   var DUCK_GAIN = 0.25;      // abgesenkt (Telefon, Ansage): ~-12 dB
   var COMP_T = 0.15, COMP_EXP = 0.667, COMP_MAKEUP = 3.0;
 
@@ -172,6 +174,8 @@
     function k(sec) { return 1 - Math.exp(-CR / (sr * sec)); }
     this.kRel = Math.exp(-CR / (sr * 0.3)); this.kCompUp = k(0.25);
     this.prePk = 0; this.cEnv = 0; this.comp = COMP_MAKEUP;
+    // Drehzahl zwischen den Meldungen des Autos (nur 10–20 je Sekunde): Tonzeit, Zeit der letzten Meldung, Steigung, Abstand
+    this.now = 0; this.rpmAt = -1; this.rpmRate = 0; this.rpmGap = 0;
     this.offTime = -1; this.startT = -1; this.runG = 0; this.kRun = k(0.08);      // Startsound: Motor-aus-Dauer (-1 = läuft/unbekannt), Zeit im Ablauf
     this.agg = 0; this.aggCab = 0; this.kAgg = k(1.0); this.barkMul = 1;
     this.kR = k(0.025); this.kL = k(0.04); this.kS = k(0.2); this.kG = k(0.12); this.kGd = k(0.07); this.kV = k(0.1);
@@ -290,10 +294,32 @@
     // Motorstart: Motor stand mindestens 0,3 s (unter 150 U/min), jetzt dreht er -> Startsound
     if (r >= 300 && this.offTime >= 0.3 && this.cfg.startSound && this.profile && this.profile.kind !== 'electric') this.startT = 0;
     if (r >= 0 && r < 150) { if (this.offTime < 0) this.offTime = 0; } else if (r >= 150) this.offTime = -1;
-    this.target.rpm = clamp(finite(+p.rpm, this.target.rpm), 0, 12000);
+    var nr = clamp(finite(+p.rpm, this.target.rpm), 0, 12000);
+    if (nr !== this.target.rpm) {
+      // Steigung aus zwei Meldungen; schnellere Sprünge (Schaltvorgang, Aussetzer der Daten) nicht fortschreiben
+      var dt = this.rpmAt >= 0 ? this.now - this.rpmAt : 0, rate = 0;
+      if (dt > 0.015 && dt < 0.3 && nr > 300 && this.target.rpm > 300) {
+        rate = (nr - this.target.rpm) / dt;
+        if (Math.abs(rate) > RPM_GLITCH) rate = 0;
+        else if (rate * this.rpmRate > 0) rate = 0.7 * rate + 0.3 * this.rpmRate;
+        this.rpmGap = this.rpmGap > 0 ? this.rpmGap * 0.85 + dt * 0.15 : dt;
+      }
+      this.rpmRate = rate; this.rpmAt = this.now; this.target.rpm = nr;
+    }
     this.target.load = clamp(finite(+p.load, this.target.load), 0, 1);
     this.target.speed = clamp(finite(+p.speed, this.target.speed), 0, 400);
     this.target.overrun = !!p.overrun;
+  };
+
+  // Drehzahl jetzt: zwischen zwei Meldungen die Steigung fortschreiben (höchstens bis zur nächsten erwarteten), danach
+  // zurück zum letzten Wert. Sonst klettert der Ton beim Beschleunigen in Stufen – das klingt rau.
+  Synth.prototype._rpmNow = function () {
+    var r = this.target.rpm;
+    if (this.rpmRate === 0 || this.rpmAt < 0) return r;
+    var age = this.now - this.rpmAt, win = Math.min(this.rpmGap, 0.1);
+    var d = clamp(this.rpmRate, -RPM_RATE_MAX, RPM_RATE_MAX) * Math.min(age, win) * 0.9;
+    if (age > win) { d *= 1 - (age - win) / 0.12; if (age > win + 0.12) { d = 0; this.rpmRate = 0; } }
+    return Math.max(0, r + clamp(d, -RPM_AHEAD, RPM_AHEAD));
   };
 
   // echte Drehzahl -> virtuelle Drehzahl des Profils
@@ -309,6 +335,7 @@
   // ---------------------------------------------------------------------------
   Synth.prototype._control = function () {
     var c = this.cfg, sr = this.sr;
+    this.now += CR / sr;
     if (this.pending && this.gain < 0.01) {
       this._setProfile(this.pending);
       this.pending = null;
@@ -330,7 +357,7 @@
     var cg = (this.cEnv > COMP_T ? Math.pow(COMP_T / this.cEnv, COMP_EXP) : 1) * COMP_MAKEUP;
     this.comp += (cg - this.comp) * (cg < this.comp ? 0.5 : this.kCompUp);
     if (this.offTime >= 0) this.offTime += CR / sr;
-    var rpmT = p.kind === 'electric' ? 0 : this._virtualRpm(this.target.rpm), loadT = this.target.load;
+    var rpmT = p.kind === 'electric' ? 0 : this._virtualRpm(this._rpmNow()), loadT = this.target.load;
     if (this.startT >= 0) {
       var st = this.startT, idle = p.idleRpm;
       if (st < START_CRANK) { rpmT = 230 + 50 * Math.sin(st * 40); loadT = 0.12; }            // Starter dreht

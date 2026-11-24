@@ -34,7 +34,7 @@ beim Gleiten bleibt er dezent im Hintergrund, im Schub blubbert er leise aus.
   Abgas-Druckimpuls (echte Zündfolge), der durch eine nachgebildete Auspuffanlage läuft: Krümmer,
   Hauptrohr, Schalldämpfer. Dazu kommt Körperschall über Motorlager und Karosserie. Die Karosserie
   dämpft die Höhen – so wie man einen Motor im Auto wirklich hört.
-- **Keine schrillen Töne, keine Knackser, kein Rauschen.** Kein Turbo-Pfeifen, keine Patscher, kein
+- **Keine schrillen Töne, keine Knackser, kein Rauschen.** Kein Pfeifen, keine Patscher, kein
   Ansaugrauschen, kein Zischen. Prüfwerkzeuge im Repository messen das automatisch.
 - **Oben im Drehzahlband lauter,** wie ein echter Motor – auch bei Teillast.
 - **Folgt dem Fahrmodus:** In Eco Pro dezent und dumpfer, in Comfort normal, in Sport lauter, offener und
@@ -50,23 +50,26 @@ beim Gleiten bleibt er dezent im Hintergrund, im Schub blubbert er leise aus.
 
 | Profil | Charakter |
 |---|---|
-| **Street Four** (Standard) | Turbo-Vierzylinder: kernig und drehfreudig. |
-| **Power Four** | Auf den 220d abgestimmt: wie Street Four, aber satter und kräftiger. Das kurze Diesel-Drehzahlband wird weiter gestreckt, dazu mehr Bass und Fülle, ruhiger Leerlauf ohne Brummen und Nageln. |
-| **Sport Four** | Wie Street Four, aber mit Sportauspuff: offener und bellender. |
-| **Supra Turbo** | Reihensechser mit Turbo im Supra-Stil: seidig und rauchig, dreht frei hoch. |
-| **Rally Five** | Turbo-Fünfzylinder: Die ungerade Zündfolge gibt das typische Trällern, rau und kehlig. |
-| **Flat Four** | Turbo-Boxer: Ungleich lange Krümmer je Seite geben das bekannte Grummeln. |
+| **Power Four** (Standard) | Kräftiger Vierzylinder, auf das schmale Drehzahlband eines Diesels abgestimmt: oben satt statt dünn. |
+| **Supra** | Reihensechser im Supra-Stil: seidig und rauchig, dreht frei hoch. |
+| **Flat Four** | Vierzylinder-Boxer: Ungleich lange Krümmer je Seite geben das bekannte Grummeln. |
+| **Flat Six** | Sechszylinder-Boxer: kehlig und sonor, dreht frei hoch. |
+| **Rally Five** | Fünfzylinder: Die ungerade Zündfolge gibt das typische Trällern, rau und kehlig. |
 | **Muscle V8** | Cross-Plane-V8 mit dem typischen ungleichmäßigen Blubbern. |
 | **Track V10** | Voller, dichter Zehnzylinder. |
+| **Grand V12** | Seidig und mächtig, singt oben heraus. |
 
-Die Namen wurden in Version 1.0.5 geändert; die gewählte Einstellung bleibt beim Update erhalten.
+Street Four und Sport Four sind seit Version 1.0.6 im neuen Power Four aufgegangen (eine gespeicherte Auswahl wird
+umgestellt).
 
 **Hörproben** (so, wie sie im Auto ankommen: 24 kHz mono; Leerlauf, Vollgas bis 4800 U/min, Schub,
 Konstantfahrt, Teillast):
-[Street Four](docs/audio/sounddrive_turbo4.wav) ·
-[Power Four](docs/audio/sounddrive_diesel4.wav) ·
-[Supra Turbo](docs/audio/sounddrive_supra.wav) ·
-[Rally Five](docs/audio/sounddrive_turbo5.wav)
+[Power Four](docs/audio/sounddrive_power_four.wav) ·
+[Supra](docs/audio/sounddrive_supra.wav) ·
+[Flat Four](docs/audio/sounddrive_flat_four.wav) ·
+[Flat Six](docs/audio/sounddrive_flat_six.wav) ·
+[Rally Five](docs/audio/sounddrive_turbo5.wav) ·
+[Grand V12](docs/audio/sounddrive_v12.wav)
 
 ### Bedienung und Einstellungen
 
@@ -77,8 +80,9 @@ Konstantfahrt, Teillast):
   das Seitenfenster der geteilten Ansicht). Reiter **Sound** im Kopf führt aus den Einstellungen zurück
 - **Lautstärkeknopf regelt die Musik** (Standard): Das Auto behandelt den Motorsound wie eine Durchsage – solange
   er läuft, würde der Knopf ihn statt der Musik verstellen. Dreht man am Knopf, tritt der Motorsound kurz zur Seite
-  (weich aus, Kanal frei), der Knopf regelt die Musik. 1,5 s nach dem letzten Drehen verbindet Sound Drive wieder (wer weiterdreht, verlängert die Pause);
-  hörbar ist der Sound, sobald das Auto die Verbindung freigibt (einige Sekunden). Dass das Auto beim Verbinden und
+  (weich aus, Kanal frei), der Knopf regelt die Musik. Knapp 1 s nach dem letzten Drehen verbindet Sound Drive wieder (wer weiterdreht, verlängert die Pause);
+  hörbar ist der Sound, sobald das Auto die Verbindung freigibt (meist 1–2 Sekunden). Ganz ohne Pause geht es nicht:
+  Solange der Kanal verbunden ist, gehört der Knopf ihm – auch bei anderen Projekten. Ansagen zählen nicht als Drehen. Dass das Auto beim Verbinden und
   Trennen die Lautstärke selbst umstellt, zählt nicht als Drehen (sonst entstünde eine Schleife). Ausgeschaltet
   verhält es sich wie im Auto vorgesehen (der Knopf regelt den Motorsound).
 - **Bei Telefon/Ansagen leiser:** Telefonate, Sprachassistent, Parkpiepser und Warngongs senken den Motorsound um
@@ -131,8 +135,8 @@ Klappt es nicht auf Anhieb: In der Statuszeile sollte „Overlay-Mix: verbunden�
 
 | Komponente | Version |
 |---|---|
-| Sound Drive (App) | 1.0.5 |
-| Sound Drive Audio (Tool) | 1.0.5 |
+| Sound Drive (App) | 1.0.6 |
+| Sound Drive Audio (Tool) | 1.0.6 |
 
 ---
 

@@ -31,7 +31,7 @@ const Synth = require('./synth');
 const Profiles = require('./profiles');
 const E = require('./engine');
 
-const VERSION = '1.0.5';
+const VERSION = '1.0.6';
 const SOCKETS = process.env.ICONIX_AUDIOD_SOCKET
   ? [process.env.ICONIX_AUDIOD_SOCKET]
   : ['/run/iconix-audiod/audiod.sock', '/tmp/iconix-audiod.sock'];
@@ -55,6 +55,8 @@ function log(msg) { console.log(new Date().toISOString() + ' iconix-audiod: ' + 
 // Dienst
 // ---------------------------------------------------------------------------
 function runDaemon() {
+  // der Player darf auch diesem Prozess Echtzeit-Priorität geben (alsa_play.py: realtime_parent)
+  process.env.ICONIX_RT_PARENT = '1';
   const clients = new Set();
   const servers = [];
   let lastLine = '', lastSent = 0;

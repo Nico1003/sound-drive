@@ -21,6 +21,8 @@ const IF = {
   PEDAL: 'de.bmw.powertrain.AcceleratorPedal'
 };
 const FRESH_MS = 1500;
+// Das Tempo kommt nur bei Änderung: länger gültig, sonst stünde bei gleichmäßiger Fahrt 0 km/h da
+const SPEED_FRESH_MS = 8000;
 // Vorhersage: die Drehzahl um so viel voraus schätzen (Steigung der letzten ~250 ms), wie Ton im Puffer steht –
 // so wirkt der Sound weniger verzögert. Begrenzt, damit Schaltknicke nicht überschießen.
 const PREDICT_S = 0.04, PREDICT_MAX = 250;
@@ -152,6 +154,9 @@ class VehicleFeed extends EventEmitter {
 
   fresh(key) { return Date.now() - this.v[key + 'At'] < FRESH_MS; }
 
+  /** Tempo jetzt (km/h) – unabhängig von der Drehzahl: beim Segeln (Motor aus) kommen keine Drehzahl-Meldungen. */
+  speed() { return Date.now() - this.v.speedAt < SPEED_FRESH_MS ? this.v.speed : 0; }
+
   _sample() {
     const cfg = this.getCfg();
     const now = Date.now();
@@ -195,7 +200,7 @@ class VehicleFeed extends EventEmitter {
     this.emit('sample', {
       rpm: Math.max(0, rpm + ahead),
       load: this.load,
-      speed: this.fresh('speed') ? this.v.speed : 0,
+      speed: this.speed(),
       overrun: overrun,
       src: src,
       at: now

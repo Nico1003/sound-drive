@@ -25,7 +25,7 @@ const AudioLink = require('./audio_link');
 const VehicleFeed = require('./vehicle_feed');
 const CarRoute = require('./car_route');
 
-const VERSION = '1.0.5';
+const VERSION = '1.0.6';
 // eigener Reiter "Sound" neben "Settings" im Kopf des Kits (führt aus den Einstellungen zurück)
 const TAB_INFO = { tabs: ['Sound'], sel: 0, badges: [] };
 // Audiomanager-Verbindung: Sie braucht im Auto ~6 s, bis sie hörbar ist (CS_CONNECTED). Darum wird sie schon beim
@@ -155,7 +155,7 @@ function startCore(host) {
     if (v == null && prev === num(setting(settings, 'volume'), 80)) return;
     pushCfg();
   };
-  core = { link, feed, route, pushCfg, synthCfg, test, previewVolume, ui: () => uiCfg, log, last: () => last };
+  core = { link, feed, route, pushCfg, synthCfg, test, previewVolume, ui: () => uiCfg, log, last: () => last, speed: () => feed.speed() };
   return core;
 }
 
@@ -216,7 +216,7 @@ function audioStatus(c) {
   const old = ds && ds.version && olderVersion(String(ds.version), VERSION) ? ds.version : '';
   const key = a.text + '|' + a.ok + '|' + r + '|' + old;
   if (key !== audioCache.key) {
-    const routeOk = !c.route.needsAm() || c.route.state === 'verbunden' || c.route.state === 'aus';
+    const routeOk = !c.route.needsAm() || c.route.state === 'verbunden' || c.route.state === 'aus' || c.route.state.indexOf('Pause') === 0;
     // langen Kanalnamen kürzen ("alsa:plug:smartx:Media_Overlay_…_CF_24_MONO" -> "SmartX")
     const dev = a.text.replace(/^Audio: /, '').replace(/alsa:(plug:)?smartx:[^ ·]+/, 'SmartX');
     audioCache = { key, val: old ? { ok: false, text: 'Sound Drive Audio ' + old + ' veraltet – bitte auf ' + VERSION + ' aktualisieren' }
@@ -245,7 +245,7 @@ function wrapLines(lines, width) {
 mgu.run({
   // Autostart (app.json "autostart": true): die Plattform startet die App beim Hochfahren ohne Bildschirm;
   // dann läuft nur der Kern (Fahrzeugdaten -> Dienst, Audiomanager-Verbindung). Öffnet man die App später,
-  // nutzt start() denselben Kern.
+  // nutzt start() denselben Kern. Laut kit/runtime/mgu.js: bg = { app, log, settings, signals, spec, dataDir }.
   background(bg) { return startCore(bg); },
   async start(ctx) {
     const c = startCore(ctx);
@@ -374,7 +374,7 @@ mgu.run({
       const cfg = c.synthCfg();
       const a = audioStatus(c), now = Date.now();
       const key = cfg.profile + '|' + cfg.enabled + '|' + cfg.volume + '|' + cfg.sport + '|' + cfg.mode + '|' + c.ui().wide + '|' + cfg.carRedline + '|' +
-        (s ? Math.round(s.rpm / 10) + '|' + Math.round(s.speed) : '-') + '|' + a.text + '|' + a.ok + '|' +
+        (s ? Math.round(s.rpm / 10) : '-') + '|' + Math.round(c.speed()) + '|' + a.text + '|' + a.ok + '|' +
         (diag ? diag.page + ':' + diag.lines.length : '');
       if (now - lastDraw < 33 || (key === lastKey && now - lastDraw < 1000)) return undefined;
       lastKey = key; lastDraw = now;
@@ -387,7 +387,7 @@ mgu.run({
       const g = kitGfx(cv);
       if (!!cv.own !== own) { own = !!cv.own; log.info('iconix: Kit führt den Bildschirm: ' + own); lastKey = ''; }
       st.profile = cfg.profile;
-      st.rpm = s ? s.rpm : 0; st.speed = s ? s.speed : 0;
+      st.rpm = s ? s.rpm : 0; st.speed = c.speed();
       st.redline = cfg.carRedline; st.volume = cfg.volume; st.enabled = cfg.enabled;
       st.sport = cfg.sport; st.demo = !s; st.mode = cfg.mode; st.wide = c.ui().wide; st.own = own;
       st.audio = a;
@@ -402,13 +402,5 @@ mgu.run({
     });
 
     log.info('iconix: Vordergrund gestartet');
-  },
-
-  // Hintergrund (app.json "autostart": true): Sound auch ohne geöffnete App.
-  // Laut kit/runtime/mgu.js: bg = { app, log, settings, signals, spec, dataDir }; läuft vor start(ctx).
-  background(bg) {
-    if (bg && bg.signals) startCore(bg);
-    else if (bg && bg.log) bg.log.warn('iconix: background ohne signals – Sound nur bei geöffneter App');
-    return null;
   }
 });
