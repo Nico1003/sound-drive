@@ -13,6 +13,10 @@
  *   288  CarLifeNavigation                                                      -> Mix wie eine Navi-Ansage
  *   1024 MediaSink_Front, 1 MainSink
  *
+ * Musik-Mix (mixCarplay, mixAndroid): ganz ohne Audiomanager. Läuft Musik über CarPlay oder Android Auto, mischt der Dienst den
+ * Motorsound direkt in deren Ringpuffer (alsa_play.py mix). Dann regelt der Lautstärkeknopf beides zusammen, die Musik wird
+ * nicht abgesenkt und nichts unterbrochen. "auto" nimmt ihn, solange solche Musik läuft, sonst den Overlay-Mix.
+ *
  * Eigene Verbindungen werden mit der Boot-ID in dataDir/iconix_route.json gemerkt; nach einem App-Neustart
  * im selben Boot wird eine liegengebliebene eigene Verbindung zuerst getrennt.
  *
@@ -25,6 +29,8 @@ const AudioLink = require('./audio_link');
 
 const AM = 'org.genivi.am.commandinterface.CommandControl';
 const AMR = 'org.genivi.am.routinginterface.RoutingControlObserver';
+// nur lesend: Liste der wirklichen (physischen) Verbindungen im Audiosystem
+const DIAG = 'de.bmw.infotainment.systemfunctions.diagnostics.job.Ent.DiagEntAudio';
 const INSTANCE = '1';
 const SINK_FRONT = 1024, SINK_MAIN = 1;
 const CHECK_MS = 500;       // Takt der Steuerung (kurz: nach einer Pause soll der Sound schnell zurück sein)
@@ -41,9 +47,21 @@ const ROUTES = {
   overlayMain: { label: 'Overlay MainSink', source: 1048, sink: SINK_MAIN, mark: false, device: 'smartx:Media_Overlay_Converter_Source_CF_24_MONO' },
   carlifeMain: { label: 'CarLife MainSink', source: 287, sink: SINK_MAIN, mark: true, device: 'smartx:CarLifeMedia_CF_48_STEREO' },
   carplay:     { label: 'CarPlay-Kanal', source: null, sink: null, mark: false, device: 'smartx:CarPlayMain_CF_48_STEREO' },
-  alsa:        { label: 'ALSA direkt', source: null, sink: null, mark: false, device: null }
+  // Versuch: am Musik-Lautstärkeweg vorbei auf den zweiten Eingang des Verstärkers (InputB, 130)
+  direct:      { label: 'Verstärker direkt (Versuch)', source: 1048, sink: 130, direct: true, mark: false, device: 'smartx:Media_Overlay_Converter_Source_CF_24_MONO' },
+  alsa:        { label: 'ALSA direkt', source: null, sink: null, mark: false, device: null },
+  // music: Quelle des Audiomanagers, die dort spielt; channel: ihr SmartX-Kanal
+  mixCarplay:  { label: 'In der CarPlay-Musik', source: null, sink: null, mark: false, device: 'mix:CarPlayMain_CF_48_STEREO', channel: 'CarPlayMain_CF_48_STEREO', music: 266 },
+  mixAndroid:  { label: 'In der Android-Auto-Musik', source: null, sink: null, mark: false, device: 'mix:AndroidAutoMedia_CF_48_STEREO', channel: 'AndroidAutoMedia_CF_48_STEREO', music: 273 }
 };
 const DEFAULT_ROUTE = 'overlay';
+const MIX_IDS = ['mixCarplay', 'mixAndroid'];
+const MIX_CHANNELS = MIX_IDS.map(function (k) { return ROUTES[k].channel; });
+// Wechsel zwischen Musik-Mix und Overlay: so lange muss die Musik laufen / stehen (kurze Lücken zwischen zwei Titeln nicht)
+const MIX_ON_MS = 600, MIX_OFF_MS = 2000;
+const MIX_BLOCK_MS = 60000;     // Mischen schlug fehl: so lange beim Overlay bleiben
+const MUSIC_POLL_MS = 1000;     // ohne eigene Verbindung: so oft nachsehen, welche Musikquelle spielt
+const MUSIC_OLD_MS = 10000;     // älter: unbekannt
 // Absenken (Ducking): solange eine dieser Quellen verbunden ist, wird der Motorsound leiser – Telefon,
 // Sprachassistent, Parkpiepser, Warngongs. Navigation und Verkehrsdurchsagen bewusst NICHT (Ton bleibt).
 // Namen aus dem Audiomanager (getListMainSources); Musikquellen zählen nicht.
@@ -68,6 +86,12 @@ const KNOB_GAP_MS = 3000;
 const KNOB_SETTLE_MS = 2500;
 // Eine Verbindung gilt als hörbar, sobald sie CS_CONNECTED meldet (im Auto ~6 s nach connect) – spätestens nach 8 s.
 const AUDIBLE_AFTER_MS = 8000;
+// Ausgleich: Bei dieser Auto-Lautstärke gilt der Regler der App unverändert; je Stufe am Knopf wird gegengeregelt.
+// Grenzen: lauter als der Kanal geht nicht (leise Musik), leiser immer.
+const COMP_REF = 25, COMP_MAX_DB = 12, COMP_MIN_DB = -24;
+const COMP_STABLE_MS = 4000;   // so lange unverändert gilt auch ein Wert, der nicht nach Knopf aussah
+// Musikquellen (Klasse CP_ENTERTAINMENT); alles andere am vorderen Weg ist eine Ansage, ein Telefonat ...
+const MUSIC_SOURCES = [1, 266, 273, 287, 1024, 1033, 1034, 1035, 1036, 1044, 1045, 1046, 1049];
 const CS = ['CS_UNKNOWN', 'CS_CONNECTING', 'CS_CONNECTED', 'CS_DISCONNECTING', 'CS_DISCONNECTED', 'CS_SUSPENDED'];
 
 function bootId() {
@@ -123,12 +147,69 @@ class CarRoute {
     this.warned = null; this.warnedAt = 0;
     this.stopped = false; this.unavail = 0;
     this.orphans = []; this.sweepAt = 0;     // Verbindungen, deren Trennen fehlschlug (Nummern)
+    this.compStep = 0; this.compVol = null; this.compCand = null; this.compAt = 0; this.compDbLast = 0;
+    this.interrupt = false;     // Ansage oder Telefon aktiv
+    this.onComp = null;         // fn(dB): Ausgleich hat sich geändert
+    this.diag = null; this.phys = null; this.directBlock = 0;
+    this.auto = false; this.pickId = DEFAULT_ROUTE; this.goodId = null; this.goodAt = 0; this.badAt = 0; this.mixBlock = 0;
+    this.music = null; this.musicAt = 0;     // Musikquelle am vorderen Lautsprecherweg (Nummer) und wann gelesen
     this.onChange = null;       // fn(): hörbar/gehalten hat sich geändert (die App schaltet den Ton weich)
     this.lastAudible = null;
   }
 
   static routes() { return ROUTES; }
   static route(id) { return ROUTES[id] || ROUTES[DEFAULT_ROUTE]; }
+
+  /** Gültige Einstellung "Tonweg"? */
+  static setting(id) { return id === 'auto' || id === 'overlayOnly' || !!ROUTES[id]; }
+
+  /**
+   * Weg zur Einstellung. "auto": Musik-Mix, solange CarPlay oder Android Auto Musik spielt, sonst Overlay.
+   * @param mix  Zustand der Musikströme vom Dienst: { <Kanal>: { alive, err, ring } } (null: alter Dienst)
+   * @param err  Fehler der Ausgabe im Dienst
+   */
+  pick(id, mix, err) {
+    this.auto = id === 'auto';
+    if (!this.auto) return (this.pickId = id === 'overlayOnly' || !ROUTES[id] ? DEFAULT_ROUTE : id);
+    const now = Clock.now(), known = this.musicAt > 0 && now - this.musicAt < MUSIC_OLD_MS;
+    if (MIX_IDS.indexOf(this.pickId) < 0 && this.pickId !== DEFAULT_ROUTE) this.pickId = DEFAULT_ROUTE;
+    const cur = ROUTES[this.pickId], mixing = !!cur.channel;
+    if (mixing && err && now >= this.mixBlock) {
+      this.mixBlock = now + MIX_BLOCK_MS;
+      this.log.warn('iconix: Mischen in die Musik geht nicht (' + String(err).slice(0, 120) + ') – nehme den Overlay-Weg');
+    }
+    const good = now < this.mixBlock ? null : MIX_IDS.filter((k) => {
+      const m = mix && mix[ROUTES[k].channel];
+      // keine Musikquelle verbunden (Ansage unterbricht sie kurz): nicht deswegen wechseln
+      return !!(m && m.alive) && (!known || this.music == null || this.music === ROUTES[k].music);
+    })[0] || null;
+    if (good !== this.goodId) { this.goodId = good; this.goodAt = now; }
+    let next = this.pickId;
+    if (good) {
+      this.badAt = 0;
+      if (good !== this.pickId && now - this.goodAt >= MIX_ON_MS) next = good;
+    } else if (mixing) {
+      if (!this.badAt) this.badAt = now;
+      // andere Musikquelle gewählt oder Mischen gesperrt: gleich; sonst (Pause, Lücke) erst nach einer Weile
+      if (now - this.badAt >= MIX_OFF_MS || now < this.mixBlock || (known && this.music != null && this.music !== cur.music)) next = DEFAULT_ROUTE;
+    }
+    if (next !== this.pickId) {
+      this.pickId = next; this.badAt = 0;
+      const c = ROUTES[next].channel;
+      this.log.info('iconix: Tonweg jetzt: ' + ROUTES[next].label + (c ? ' (Ringpuffer ' + mix[c].ring + ')' : ''));
+    }
+    return next;
+  }
+
+  /** Welche Musikquelle spielt am vorderen Weg? */
+  _noteMusic(list) {
+    const own = this.conn ? this.conn.source : null;
+    const l = list.filter((c) => c.sink === SINK_FRONT && c.source !== own && (!c.state || c.state === 'CS_CONNECTED'));
+    this.interrupt = l.some((c) => MUSIC_SOURCES.indexOf(c.source) < 0);
+    const hit = l.filter((c) => MIX_IDS.some((k) => ROUTES[k].music === c.source))[0] || l[0];
+    this.music = hit ? hit.source : null;
+    this.musicAt = Clock.now();
+  }
 
   start() {
     if (this.timer) return;
@@ -153,6 +234,35 @@ class CarRoute {
   /** Lautstärkeknopf der Musik überlassen an/aus (Einstellung). */
   setKnob(on) { this.knobOn = !!on; if (!on) this.knobAt = 0; }
 
+  /** Ausgleich des Lautstärkeknopfs: dB je Stufe (0 = aus, Motorsound folgt dem Knopf). */
+  setComp(dbPerStep) { const v = Number(dbPerStep); this.compStep = isFinite(v) ? Math.max(0, Math.min(3, v)) : 0; if (!this.compStep) this.compVol = null; this._compChanged(); }
+
+  /** Pegel gegen die Auto-Lautstärke (dB). */
+  compDb() {
+    if (!this.compStep || this.compVol === null) return 0;
+    return Math.max(COMP_MIN_DB, Math.min(COMP_MAX_DB, (COMP_REF - this.compVol) * this.compStep));
+  }
+  _compChanged() {
+    const d = this.compDb();
+    if (d === this.compDbLast) return;
+    this.compDbLast = d;
+    if (this.onComp) { try { this.onComp(d); } catch (e) { /* egal */ } }
+  }
+  _setVol(v) { this.compVol = v; this.compCand = null; this._compChanged(); }
+
+  /**
+   * Gelesene Lautstärke der Haupt-Senke für den Ausgleich. Beim Overlay ist es unsere eigene: gilt sofort. Im Musikstrom ist
+   * es die der Musik – aber nicht, während eine Ansage läuft (dann zeigt das Auto deren Lautstärke).
+   */
+  async _noteVol(v, mixing) {
+    if (!this.compStep || v === this.compVol) { this.compCand = null; return; }
+    if (this.compVol === null || !mixing) { this._setVol(v); return; }
+    const now = Clock.now();
+    if (v !== this.compCand) { this.compCand = v; this.compAt = now; }
+    if (this.interrupt || this.ducked) { this.compAt = now; return; }
+    if (now - this.compAt >= COMP_STABLE_MS || await this._byHand(Math.abs(v - this.compVol))) { if (!this.interrupt) this._setVol(v); }
+  }
+
   /** Gerade gedreht (oder vor < KNOB_REST_MS): Motorsound macht Platz. */
   knobHeld() { return this.knobOn && this.knobAt > 0 && Clock.now() - this.knobAt < KNOB_REST_MS; }
 
@@ -162,7 +272,7 @@ class CarRoute {
    */
   audible() {
     if (!this.needsAm()) return true;
-    if (!this.conn || this.knobHeld()) return false;
+    if (!this.conn || (this.knobHeld() && !CarRoute.route(this.routeId).direct)) return false;
     return this.connState === 'CS_CONNECTED' || Clock.now() - (this.conn.at || 0) > AUDIBLE_AFTER_MS;
   }
 
@@ -175,7 +285,10 @@ class CarRoute {
   async _knobTick() {
     this._changed();
     // nur mit bestehender Verbindung oder während der Pause (weiter drehen verlängert sie) – keine Abfragen beim Hochfahren
-    if (!this.knobOn || !this.needsAm() || !(this.conn || this.knobHeld()) || this.knobBusy) return;
+    const r = CarRoute.route(this.routeId), mixing = !!r.channel;
+    const knob = this.knobOn && this.needsAm() && !r.direct && !!(this.conn || this.knobHeld());
+    const watch = this.compStep > 0 && this.wanted && !r.direct && (mixing || !!this.conn);
+    if (!(knob || watch) || this.knobBusy) return;
     this.knobBusy = true;
     try {
       if (!(await this._proxies())) return;
@@ -183,6 +296,8 @@ class CarRoute {
       const s1 = sinks.filter((x) => x.sinkID === SINK_MAIN)[0];
       const v = s1 ? Number(s1.volume) : NaN;
       this.knobErr = s1 ? null : 'Haupt-Senke 1 fehlt';
+      if (watch && isFinite(v)) await this._noteVol(v, mixing);
+      if (!knob) return;
       // eigener Verbindungswechsel (verbunden, Zustand, getrennt)? dann eine Weile nur beobachten
       const now = Clock.now(), sig = this.conn ? this.conn.id + ':' + this.connState : '-';
       if (sig !== this.knobSig) { this.knobSig = sig; this.knobQuiet = now + KNOB_SETTLE_MS; }
@@ -244,7 +359,7 @@ class CarRoute {
   /** Gewünschten Weg und ob gerade Ton gebraucht wird setzen; die Steuerung folgt im nächsten Takt. */
   want(routeId, on) {
     const id = ROUTES[routeId] ? routeId : DEFAULT_ROUTE;
-    if (id !== this.routeId) { this.routeId = id; this.nextTry = 0; this.lastError = null; }
+    if (id !== this.routeId) { this.compVol = null; this.compCand = null; this.routeId = id; this.nextTry = 0; this.lastError = null; }
     if (!!on !== this.wanted) { this.wanted = !!on; this.nextTry = 0; }
   }
 
@@ -272,6 +387,7 @@ class CarRoute {
         if (hit0 && hit0.state && hit0.state !== this.connState) { this.log.info('iconix: AM-Verbindung ' + hit0.id + ': ' + hit0.state); this.connState = hit0.state; this._changed(); }
       }
       this._noteOthers(list);
+      this._noteMusic(list);
       if (!this.duckOn) return;
       const own = this.conn ? this.conn.source : null;
       const active = list.filter((c) => c.source !== own && (!c.state || c.state === 'CS_CONNECTED' || c.state === 'CS_CONNECTING'));
@@ -295,6 +411,7 @@ class CarRoute {
   /** Kurzer Text für die Statuszeile. */
   short() {
     const r = CarRoute.route(this.routeId);
+    if (r.channel) return r.label + (this.ducked ? ' · leiser (Telefon/PDC)' : '');
     if (!this.needsAm()) return r.label + ' (ohne Audiomanager)';
     let s = r.label + ': ' + this.state;
     if (this.state === 'verbunden' && this.connState && this.connState !== 'CS_CONNECTED') s += ' (' + this.connState + ')';
@@ -378,7 +495,8 @@ class CarRoute {
   async _step() {
     if (this.stopped) return;
     const now = Clock.now();
-    if ((this.duckOn || this.knobOn) && this.conn && now - this.lastDuck >= DUCK_POLL_MS) this._pollDuck();
+    if ((this.duckOn || this.knobOn || this.auto || this.compStep) && this.conn && now - this.lastDuck >= DUCK_POLL_MS) this._pollDuck();
+    else if (this.auto && this.wanted && !this.conn && now - this.lastDuck >= MUSIC_POLL_MS) this._pollDuck();
     else if (!this.wanted && this.ducked) { this.ducked = false; this.duckBy = null; }
     if (this.busy) return;
     if (this.orphans.length && now - this.sweepAt > RETRY_MS) {
@@ -417,6 +535,7 @@ class CarRoute {
 
   async _connect(id, r) {
     this.state = 'verbinde';
+    if (r.direct) return this._connectDirect(id, r);
     // belegte Verbindungen derselben Quelle übernehmen (Quelle 287/288 nutzt außerhalb Chinas niemand sonst)
     let list = [];
     try { list = await this._connections(); } catch (e) { list = []; }
@@ -451,6 +570,73 @@ class CarRoute {
     this.state = 'verbunden'; this.lastError = null; this.lastVerify = Clock.now();
     this._save(); this._changed();
     this.log.info('iconix: AM verbunden ' + r.source + ' -> ' + r.sink + ' (' + r.label + '), mainConnectionID ' + cid + ', amError ' + errOf(res));
+  }
+
+  /** Physische Verbindungen des Audiosystems: [{ id, source, sourceName, sink, sinkName, state }] (nur lesend). */
+  async _physical() {
+    if (!this.diag) this.diag = await this.signals.proxy(DIAG, 'Inst1');
+    const v = await this._call(this.diag, 'StatusAvConnections', { handleIn: 0 }, 2500);
+    return CarRoute.parseAv(v && v.STAT_AV_CONNECTION, v && v.STAT_NUMBER_AV_CONNECTIONS_WERT);
+  }
+  static parseAv(raw, count) {
+    const b = Buffer.isBuffer(raw) ? raw : Array.isArray(raw) || raw instanceof Uint8Array ? Buffer.from(raw) : null, out = [];
+    if (!b) throw new Error('unbekannte Antwort');
+    let p = 0;
+    const name = () => { const e = b.indexOf(0, p); if (e < p) throw new Error('Name'); const s = b.toString('latin1', p, e); p = e + 1; return s; };
+    for (let i = 0; i < Math.min(64, Number(count) || 0) && p + 2 <= b.length; i++) {
+      const x = { id: b.readUInt16LE(p), source: b.readUInt16LE(p + 2) }; p += 4;
+      x.sourceName = name(); x.sink = b.readUInt16LE(p); p += 2; x.sinkName = name(); x.state = b[p++];
+      out.push(x);
+    }
+    return out;
+  }
+  static avText(l) { return l.map((x) => x.source + ' ' + x.sourceName + '->' + x.sink + ' ' + x.sinkName + ' ' + (CS[x.state] || x.state)).join(', ') || 'keine'; }
+
+  /**
+   * Versuch "Verstärker direkt": unseren Kanal ohne Haupt-Verbindung auf den zweiten Eingang des Verstärkers (130) legen.
+   * Über den normalen Weg einmal kurz verbunden, steht in der Liste der physischen Verbindungen, wie die Quelle dort heißt.
+   * Klappt es nicht, bleibt alles wie vorher; alles steht im Log.
+   */
+  async _connectDirect(id, r) {
+    const fail = (t) => { this.directBlock = Clock.now() + 60000; throw new Error(t); };
+    const wait = (ms) => new Promise((ok) => setTimeout(ok, ms));
+    if (Clock.now() < this.directBlock) { this.state = 'Fehler'; this.nextTry = this.directBlock; return; }
+    if (this.phys === null) {
+      this.phys = [];
+      let cid = null;
+      try {
+        const c = await this._call(this.am, 'connect', { sourceID: 1048, sinkID: SINK_FRONT });
+        cid = okReply(c) ? c.mainConnectionID : null;
+        await wait(2000);
+        const l = await this._physical();
+        AudioLink.logLong(this.log, 'Physisch (Overlay): ' + CarRoute.avText(l));
+        this.phys = l;
+      } catch (e) { this.log.warn('iconix: physische Verbindungen nicht lesbar: ' + String(e && e.message || e).slice(0, 120)); }
+      if (cid != null) { try { await this._call(this.am, 'disconnect', { mainConnectionID: cid }); } catch (e) { this.orphans.push(cid); } }
+      await wait(500);
+    }
+    const src = this.phys.filter((x) => /overlay/i.test(x.sourceName)).map((x) => x.source).concat([1048]).filter((x, i, a) => a.indexOf(x) === i);
+    for (let i = 0; i < src.length && this.wanted && this.routeId === id; i++) {
+      const what = src[i] + ' -> ' + r.sink;
+      let res;
+      try { res = await this._call(this.am, 'connect', { sourceID: src[i], sinkID: r.sink }); } catch (e) { this.log.warn('iconix: direkt ' + what + ': ' + String(e && e.message || e).slice(0, 80)); continue; }
+      if (!okReply(res)) { this.log.warn('iconix: direkt ' + what + ' abgelehnt: ' + errOf(res)); continue; }
+      const cid = res.mainConnectionID;
+      for (let k = 0; k < 10; k++) {
+        await wait(500);
+        const hit = (await this._connections().catch(() => [])).filter((c) => c.id === cid)[0];
+        if (!hit || hit.state !== 'CS_CONNECTED') continue;
+        this.conn = { id: cid, routeId: id, source: src[i], sink: r.sink, at: Clock.now() };
+        this.connState = hit.state; this.state = 'verbunden'; this.lastError = null; this.lastVerify = Clock.now();
+        this._save(); this._changed();
+        this.log.info('iconix: direkt verbunden ' + what + ', mainConnectionID ' + cid);
+        try { AudioLink.logLong(this.log, 'Physisch (direkt): ' + CarRoute.avText(await this._physical())); } catch (e) { /* egal */ }
+        return;
+      }
+      this.log.warn('iconix: direkt ' + what + ' wird nicht verbunden');
+      try { await this._call(this.am, 'disconnect', { mainConnectionID: cid }); } catch (e) { this.orphans.push(cid); }
+    }
+    fail('Verstärker-Eingang nicht erreichbar');
   }
 
   async _verify() {
@@ -498,7 +684,7 @@ class CarRoute {
     const list = await this._connections();
     for (let i = 0; i < ids.length; i++) {
       const x = list.filter((y) => y.id === ids[i])[0];
-      const ours = x && Object.keys(ROUTES).some((k) => ROUTES[k].source === x.source) && !(this.conn && this.conn.id === x.id);
+      const ours = x && (x.sink === ROUTES.direct.sink || Object.keys(ROUTES).some((k) => ROUTES[k].source === x.source)) && !(this.conn && this.conn.id === x.id);
       if (ours) await this._call(this.am, 'disconnect', { mainConnectionID: x.id });   // wirft: bleibt in der Liste
       this.orphans = this.orphans.filter((y) => y !== ids[i]);
       if (ours) this.log.info('iconix: AM-Verbindung ' + x.id + ' nachträglich getrennt');
@@ -522,6 +708,7 @@ class CarRoute {
     await each('getListMainSourceSoundProperties', 'listSourceProperties', 'AM-Eigenschaften unserer Quelle', { sourceID: 1048 }, (p) => props([p]));
     await each('getListMainSinks', 'listMainSinks', 'AM-Senken', {}, (x) => x.sinkID + ' ' + (x.name || '') + (x.sinkClassID !== undefined ? ' K' + x.sinkClassID : '') + ' vol ' + x.volume);
     await each('getListMainConnections', 'listConnections', 'AM-Verbindungen', {}, (c) => c.sourceID + '->' + c.sinkID + ' ' + csName(c.connectionState));
+    try { put('Physisch: ' + CarRoute.avText(await this._physical())); } catch (e) { put('Physisch: ' + String(e && e.message || e).slice(0, 120)); }
   }
 
   /** Zeilen für die Audio-Diagnose: Weg, Verbindung, Quellen und Senken des Audiomanagers. */
@@ -532,6 +719,8 @@ class CarRoute {
     out.push('Status: ' + this.short() + (this.conn ? ' · ID ' + this.conn.id : ''));
     out.push('Lautstärkeknopf: ' + (!this.knobOn ? 'regelt den Motorsound (wie im Auto vorgesehen)' : 'regelt die Musik – Motorsound macht beim Drehen Platz') +
       (this.knobVol !== null ? ' · Senke 1: ' + this.knobVol : '') + (this.knobTurns ? ' · ' + this.knobTurns + 'x gedreht' : '') + (this.knobIgnored ? ' · ' + this.knobIgnored + ' Änderungen durchs Auto ignoriert' : '') + (this.knobErr ? ' · ' + this.knobErr : ''));
+    if (this.auto) out.push('Musik: ' + (this.musicAt ? 'Quelle ' + this.music + (this.srcNames[this.music] ? ' ' + this.srcNames[this.music] : '') : 'unbekannt') + ' · gewählt: ' + ROUTES[this.pickId].label + (Clock.now() < this.mixBlock ? ' · Mischen gesperrt (Fehler)' : ''));
+    out.push('Ausgleich: ' + (!this.compStep ? 'aus (Motorsound folgt dem Knopf)' : this.compStep + ' dB je Stufe' + (this.compVol === null ? '' : ' · Auto ' + this.compVol + ' -> ' + (this.compDb() > 0 ? '+' : '') + this.compDb().toFixed(1) + ' dB')));
     out.push('Absenken: ' + (!this.duckOn ? 'aus' : this.ducked ? 'aktiv wegen ' + this.duckBy : 'bereit (Telefon, PDC, Gong – nicht bei Navigation)'));
     if (!(await this._proxies())) { out.push(this.proxyErr); return out; }
     const fmt = (a, idKey) => a.map(function (x) { return x[idKey] + ' ' + (x.name || ''); }).join(', ');
@@ -555,6 +744,11 @@ class CarRoute {
 module.exports = CarRoute;
 module.exports.ROUTES = ROUTES;
 module.exports.DEFAULT_ROUTE = DEFAULT_ROUTE;
+module.exports.COMP_REF = COMP_REF;
+module.exports.COMP_STABLE_MS = COMP_STABLE_MS;
+module.exports.MIX_CHANNELS = MIX_CHANNELS;
+module.exports.MIX_ON_MS = MIX_ON_MS;
+module.exports.MIX_OFF_MS = MIX_OFF_MS;
 module.exports.DUCK_POLL_MS = DUCK_POLL_MS;
 module.exports.KNOB_REST_MS = KNOB_REST_MS;
 module.exports.KNOB_SETTLE_MS = KNOB_SETTLE_MS;

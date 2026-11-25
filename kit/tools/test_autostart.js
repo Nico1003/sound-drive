@@ -49,7 +49,9 @@ const signals = {
   }
 };
 const got = { config: [], params: [] };
+const clients = [];
 const server = net.createServer((s) => {
+  clients.push(s);
   let rx = ''; s.setEncoding('utf8'); s.on('error', () => {});
   s.on('data', (d) => { rx += d; const l = rx.split('\n'); rx = l.pop(); l.filter(Boolean).forEach((x) => { const m = JSON.parse(x); if (got[m.op]) got[m.op].push(m); }); });
   s.write(JSON.stringify({ op: 'status', version: '99.0.0', backend: 'x', playing: true, wants: true }) + '\n');
@@ -76,8 +78,21 @@ async function until(what, fn, ms) {
   await until('Audio-Dienst verbunden, Einstellungen da', () => got.config.length, 8000);
   await until('Drehzahl kommt beim Dienst an', () => got.params.some((m) => m.rpm > 700), 5000);
   am.down = false;
+  const say = (o) => clients.forEach((s) => s.write(JSON.stringify(Object.assign({ op: 'status', version: '99.0.0', backend: 'x', playing: true, wants: true }, o)) + '\n'));
   await until('Tonweg verbunden', () => am.conns.length === 1, 6000);
   await until('Ton freigegeben', () => got.config.length && got.config[got.config.length - 1].cfg.hold === false, 6000);
+  // CarPlay spielt Musik: der Dienst meldet den laufenden Musikstrom -> Mix, eigene Verbindung weg
+  const lastCfg = () => got.config[got.config.length - 1].cfg;
+  assert.ok(lastCfg().mixProbe.indexOf('CarPlayMain_CF_48_STEREO') >= 0, 'Dienst soll den Musikstrom beobachten');
+  am.conns.push({ mainConnectionID: 900, sourceID: 266, sinkID: 1024, connectionState: 2 });
+  let alive = true;
+  const beat = setInterval(() => say({ device: lastCfg().device, mix: { CarPlayMain_CF_48_STEREO: { alive, err: null, ring: '4x256 2ch s16' } } }), 100);
+  await until('Musik läuft: mischt in die Musik', () => lastCfg().device === 'mix:CarPlayMain_CF_48_STEREO' && lastCfg().hold === false, 8000);
+  await until('dabei keine eigene Verbindung', () => am.conns.length === 1 && am.conns[0].sourceID === 266, 4000);
+  alive = false;
+  await until('Musik pausiert: wieder Overlay', () => /^smartx:Media_Overlay/.test(lastCfg().device) && lastCfg().hold === false && am.conns.length === 2, 10000);
+  clearInterval(beat);
+  am.conns = am.conns.filter((c) => c.sourceID !== 266);
   assert.ok(got.config[got.config.length - 1].cfg.enabled, 'Sound an');
   await until('Zeiten stehen im Log', () => ['App (AUTOSTART)', 'erste Drehzahl', 'Audio-Dienst verbunden', 'Tonweg hörbar', 'Ton läuft'].every((t) => lines.some((l) => l.indexOf('iconix: Start: ' + t) === 0)), 3000);
   clearInterval(rpm);

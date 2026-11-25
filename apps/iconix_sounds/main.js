@@ -27,7 +27,7 @@ const VehicleFeed = require('./vehicle_feed');
 const CarRoute = require('./car_route');
 const Clock = require('./clock');
 
-const VERSION = '1.0.8';
+const VERSION = '1.0.9';
 // eigener Reiter "Sound" neben "Settings" im Kopf des Kits (führt aus den Einstellungen zurück)
 const TAB_INFO = { tabs: ['Sound'], sel: 0, badges: [] };
 // Audiomanager-Verbindung: Sie braucht im Auto ~6 s, bis sie hörbar ist (CS_CONNECTED). Darum wird sie schon beim
@@ -37,7 +37,7 @@ const ROUTE_KEEP_MS = 120000;  // so lange nach dem letzten Lebenszeichen (Ton, 
 const WAKE_GAP_MS = 300000;    // so lange ohne Fahrzeugdaten = das Auto hat geschlafen
 const DEFAULTS = {
   enabled: true, profile: Profiles.DEFAULT, volume: 80, intensity: 70, sport: false,
-  muteParked: false, duck: true, knobMusic: true, followMode: true, narrow: false, speedVol: 4, startSound: true, bassDb: 0, bark: 100, loadSource: 'auto', route: CarRoute.DEFAULT_ROUTE, alsaDevice: 'auto', maxTorque: 400, carIdle: 800, carRedline: 4800
+  muteParked: false, duck: true, knobMusic: true, knobComp: 1, followMode: true, narrow: false, speedVol: 4, startSound: true, bassDb: 0, bark: 100, loadSource: 'auto', route: 'auto', alsaDevice: 'auto', maxTorque: 400, carIdle: 800, carRedline: 4800
 };
 
 function setting(settings, key) {
@@ -65,6 +65,7 @@ function startCore(host) {
   let driveMode = null;      // Fahrerlebnisschalter: eco | comfort | sport | sportplus
   let last = null;
   let feedCfg = null, synthCfgCache = null, uiCfg = null;
+  let effRoute = CarRoute.DEFAULT_ROUTE;   // gerade benutzter Tonweg ("auto" wechselt ihn, siehe CarRoute.pick)
   let volPreview = null;     // Lautstärke (0..100), solange der Regler gezogen wird – erst beim Loslassen gespeichert
 
   const refresh = () => {
@@ -82,7 +83,7 @@ function startCore(host) {
       sport: bool(g('sport')),
       carIdle: feedCfg.carIdle,
       carRedline: num(g('carRedline'), 4800),
-      route: CarRoute.ROUTES[String(g('route'))] ? String(g('route')) : CarRoute.DEFAULT_ROUTE,
+      route: CarRoute.setting(String(g('route'))) ? String(g('route')) : 'auto',
       device: 'auto',
       duck: false,
       mode: bool(g('followMode')) ? driveMode : null,
@@ -92,9 +93,11 @@ function startCore(host) {
       barkPct: num(g('bark'), 100) / 100
     };
     // Gerät für den Dienst: SmartX-Kanal des Tonwegs, bei "ALSA direkt" das frühere Ausgabegerät
-    const rt = CarRoute.route(synthCfgCache.route);
+    const rt = CarRoute.route(effRoute);
+    // der Dienst soll beobachten, ob in CarPlay / Android Auto gerade Musik läuft
+    synthCfgCache.mixProbe = synthCfgCache.route === 'auto' ? CarRoute.MIX_CHANNELS : [];
     synthCfgCache.device = rt.device || String(g('alsaDevice') || 'auto');
-    uiCfg = { muteParked: bool(g('muteParked')), duck: bool(g('duck')), wide: !bool(g('narrow')), knobMusic: bool(g('knobMusic')) };
+    uiCfg = { muteParked: bool(g('muteParked')), duck: bool(g('duck')), wide: !bool(g('narrow')), knobMusic: bool(g('knobMusic')), knobComp: num(g('knobComp'), 1) };
   };
   refresh();
 
@@ -102,9 +105,10 @@ function startCore(host) {
   const feed = new VehicleFeed(host.signals, log, () => feedCfg);
   const synthCfg = () => synthCfgCache;
   let ducked = false, held = true;   // held: Kanal gerade nicht hörbar (noch nicht verbunden, weg, Knopf gedreht) -> leise
+  let outDb = 0;             // Ausgleich des Lautstärkeknopfs (CarRoute.compDb)
   const pushCfg = () => {
-    refresh(); synthCfgCache.duck = ducked; synthCfgCache.hold = held; link.configure(synthCfgCache);
-    if (core) { core.route.setDuck(uiCfg.duck); core.route.setKnob(uiCfg.knobMusic); }
+    refresh(); synthCfgCache.outDb = outDb; synthCfgCache.duck = ducked; synthCfgCache.hold = held; link.configure(synthCfgCache);
+    if (core) { core.route.setDuck(uiCfg.duck); core.route.setKnob(uiCfg.knobMusic); core.route.setComp(uiCfg.knobComp); }
   };
   let lastActivity = 0, lastData = 0, pendingTest = 0;
 
@@ -140,8 +144,10 @@ function startCore(host) {
 
   // Audiomanager-Verbindung: ab dem Aufwachen und solange der Motor läuft (oder Ton gewünscht ist) – siehe ROUTE_KEEP_MS
   const route = new CarRoute(host.signals, log, host.dataDir);
+  let switching = null;
+  const wantRoute = () => bool(setting(settings, 'enabled')) && lastActivity > 0 && Clock.now() - lastActivity < ROUTE_KEEP_MS;
   // hörbar oder nicht (verbindet noch, Verbindung weg, Lautstärkeknopf gedreht): Ton weich aus- bzw. einblenden
-  route.onChange = audible => { if (held === !audible) return; held = !audible; synthCfgCache.hold = held; link.configure(synthCfgCache); };
+  route.onChange = audible => { if (switching || held === !audible) return; held = !audible; synthCfgCache.hold = held; link.configure(synthCfgCache); };
   setInterval(() => {
     const ds = link.connected ? link.daemonStatus : (link.local ? link.localStatus : null);
     const now = Clock.now();
@@ -150,7 +156,20 @@ function startCore(host) {
     if (ds && ds.playing) mark('play', 'Ton läuft' + (ds.openMs > 3000 ? ' (Kanal öffnete erst nach ' + Math.round(ds.openMs / 1000) + ' s)' : ''));
     if (ds && (ds.wants || ds.playing || ds.opening) && last && last.rpm > 100) lastActivity = now;
     if (ds && ds.devTest) lastActivity = now;
-    route.want(synthCfgCache.route, bool(setting(settings, 'enabled')) && lastActivity > 0 && now - lastActivity < ROUTE_KEEP_MS);
+    const next = route.pick(synthCfgCache.route, ds && ds.mix, ds && ds.device === CarRoute.route(effRoute).device ? ds.error : null);
+    // Wechsel des Wegs: erst ausblenden, dann umschalten
+    if (next !== effRoute && !switching) {
+      const apply = () => {
+        switching = null;
+        effRoute = next;
+        route.want(effRoute, wantRoute());
+        held = !route.audible();
+        pushCfg();
+      };
+      if (ds && ds.playing && !held) { held = true; synthCfgCache.hold = true; link.configure(synthCfgCache); switching = setTimeout(apply, 200); }
+      else apply();
+    }
+    if (!switching) route.want(effRoute, wantRoute());
     // Telefon, Navi-Ansage, Parkpiepser: Motorsound absenken (CarRoute beobachtet den Audiomanager)
     if (route.ducked !== ducked) { ducked = route.ducked; synthCfgCache.duck = ducked; link.configure(synthCfgCache); }
     // wartender Testsound: starten, sobald der Tonweg hörbar ist (spätestens nach 10 s)
@@ -158,6 +177,9 @@ function startCore(host) {
   }, 500);
   route.setDuck(uiCfg.duck);
   route.setKnob(uiCfg.knobMusic);
+  // am Knopf gedreht: Motorsound sofort gegenregeln, damit er gleich laut bleibt
+  route.onComp = db => { if (db === outDb) return; outDb = db; synthCfgCache.outDb = db; link.configure(synthCfgCache); };
+  route.setComp(uiCfg.knobComp);
   route.start();
   // die Plattform beendet die App (Update, Abschalten): Tonweg sauber freigeben
   if (host.app && typeof host.app.on === 'function') host.app.on('shutdown', () => { route.stop(); });
@@ -238,7 +260,7 @@ function audioStatus(c) {
   if (key !== audioCache.key) {
     const routeOk = !c.route.needsAm() || c.route.state === 'verbunden' || c.route.state === 'aus' || c.route.state.indexOf('Pause') === 0;
     // langen Kanalnamen kürzen ("alsa:plug:smartx:Media_Overlay_…_CF_24_MONO" -> "SmartX")
-    const dev = a.text.replace(/^Audio: /, '').replace(/alsa:(plug:)?smartx:[^ ·]+/, 'SmartX');
+    const dev = a.text.replace(/^Audio: /, '').replace(/alsa:(plug:)?smartx:[^ ·]+/, 'SmartX').replace(/mix:[^ ·]+/, 'Musik-Mix');
     audioCache = { key, val: old ? { ok: false, text: 'Sound Drive Audio ' + old + ' veraltet – bitte auf ' + VERSION + ' aktualisieren' }
       : { ok: a.ok && routeOk, text: r + ' · ' + dev } };
   }

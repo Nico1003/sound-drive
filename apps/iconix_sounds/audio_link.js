@@ -237,8 +237,10 @@ class AudioLink extends EventEmitter {
     if (m.op === 'diag' && Array.isArray(m.lines)) {
       this.daemonDiag = m.lines;
       // Tonkanäle des Autos ins Log (nur in der Diagnose, je App-Start einmal)
-      const i = m.lines.findIndex(l => /^SmartX-Kanäle/.test(l));
-      if (i >= 0 && !this.loggedChannels) { this.loggedChannels = true; AudioLink.logLong(this.log, m.lines[i]); }
+      if (!this.loggedChannels) {
+        const l = m.lines.filter(x => /^(SmartX-Kanäle|Ringpuffer )/.test(x));
+        if (l.length) { this.loggedChannels = true; l.forEach(x => AudioLink.logLong(this.log, x)); }
+      }
       this.emit('diag', m.lines);
       return;
     }

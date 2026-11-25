@@ -32,7 +32,7 @@ const Synth = require('./synth');
 const Profiles = require('./profiles');
 const E = require('./engine');
 
-const VERSION = '1.0.8';
+const VERSION = '1.0.9';
 const SOCKETS = process.env.ICONIX_AUDIOD_SOCKET
   ? [process.env.ICONIX_AUDIOD_SOCKET]
   : ['/run/iconix-audiod/audiod.sock', '/tmp/iconix-audiod.sock'];
@@ -113,7 +113,7 @@ function runDaemon() {
         log('SmartX: ' + JSON.stringify(sx));
         log('Diagnose: ' + JSON.stringify(r));
         lines = ['--- Ausgabe ---', 'Gerät: ' + engine.device + ' -> ' + engine.status().resolved,
-          'SmartX-Kanäle (Wiedergabe): ' + (eps.length ? eps.join(', ') : 'keine in /dev/shm')].concat(E.smartxLines(sx)).concat(['--- Allgemein (root) ---'], E.diagLines(r, []));
+          'SmartX-Kanäle (Wiedergabe): ' + (eps.length ? eps.join(', ') : 'keine in /dev/shm'), E.ringLine(x.rings)].concat(E.smartxLines(sx)).concat(['--- Allgemein (root) ---'], E.diagLines(r, []));
       } catch (x) { lines = ['Diagnose fehlgeschlagen: ' + (e && e.message || x.message)]; }
       const msg = JSON.stringify({ op: 'diag', lines: lines }) + '\n';
       clients.forEach(function (c) { try { c.write(msg); } catch (x) { /* egal */ } });
@@ -235,7 +235,7 @@ if (require.main === module) {
     const list = E.candidates();
     console.log(list.length ? list.map(function (b) { return b.name + '  ' + b.path + ' ' + b.argv.join(' '); }).join('\n') : 'Kein Abspielprogramm gefunden.');
   } else if (process.argv.indexOf('--diag-json') >= 0) {
-    process.stdout.write(JSON.stringify({ smartx: E.probeSmartx(), audio: E.probeAudio(), endpoints: E.smartxEndpoints() }));
+    process.stdout.write(JSON.stringify({ smartx: E.probeSmartx(), audio: E.probeAudio(), endpoints: E.smartxEndpoints(), rings: E.rings() }));
   } else if (process.argv.indexOf('--wav') >= 0) {
     renderWav(arg('--wav', 'iconix.wav'));
   } else if (process.argv.indexOf('--play-test') >= 0) {

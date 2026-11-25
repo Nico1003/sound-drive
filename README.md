@@ -79,13 +79,15 @@ Konstantfahrt, Teillast):
 - Lautstärke 0–100 % (100 % ist so laut wie früher 150 %: leise Passagen deutlich lauter, Spitzen begrenzt), **Ausprägung** (wie stark der Sound mit der Last aufmacht), Sport-Boost, stumm im Stand
 - **Sound folgt dem Fahrmodus** (abschaltbar); die Seite nutzt die ganze Breite (**Schmale Ansicht** lässt Platz für
   das Seitenfenster der geteilten Ansicht). Reiter **Sound** im Kopf führt aus den Einstellungen zurück
-- **Lautstärkeknopf regelt die Musik** (Standard): Das Auto behandelt den Motorsound wie eine Durchsage – solange
-  er läuft, würde der Knopf ihn statt der Musik verstellen. Dreht man am Knopf, tritt der Motorsound kurz zur Seite
-  (weich aus, Kanal frei), der Knopf regelt die Musik. Knapp 1 s nach dem letzten Drehen verbindet Sound Drive wieder (wer weiterdreht, verlängert die Pause);
-  hörbar ist der Sound, sobald das Auto die Verbindung freigibt (meist 1–2 Sekunden). Ganz ohne Pause geht es nicht:
-  Solange der Kanal verbunden ist, gehört der Knopf ihm – auch bei anderen Projekten. Ansagen zählen nicht als Drehen. Dass das Auto beim Verbinden und
-  Trennen die Lautstärke selbst umstellt, zählt nicht als Drehen (sonst entstünde eine Schleife). Ausgeschaltet
-  verhält es sich wie im Auto vorgesehen (der Knopf regelt den Motorsound).
+- **Lautstärkeknopf:** Läuft Musik über **CarPlay** (oder Android Auto), mischt Sound Drive den Motorsound direkt in die
+  Musik. Der Knopf regelt dann beides zusammen, die Musik wird nicht abgesenkt, nichts pausiert. Ohne solche Musik
+  (Pause, Radio, Bluetooth) nimmt die App den Overlay-Weg. Den behandelt das Auto wie eine Durchsage: Es senkt die Musik ab
+  und gibt ihm den Knopf. Darum tritt der Motorsound dort beim Drehen kurz zur Seite (abschaltbar) und kommt 1–3 Sekunden
+  nach dem letzten Drehen zurück.
+- **Motorsound unabhängig vom Lautstärkeknopf** (Standard: Normal): Die App liest die Lautstärke des Autos mit und regelt
+  den Motorsound gegenläufig – er bleibt beim Drehen etwa gleich laut, eingestellt wird er nur mit dem Regler in der App.
+  Passt die Stärke nicht zum Auto, gibt es mehrere Stufen. Grenze: Ist die Musik sehr leise, lässt sich der Motorsound nicht
+  beliebig anheben (höchstens +12 dB), denn beide laufen durch denselben Verstärkereingang.
 - **Bei Telefon/Ansagen leiser:** Telefonate, Sprachassistent, Parkpiepser und Warngongs senken den Motorsound um
   etwa 12 dB ab; Navigationsansagen bewusst nicht
 - **Klang anpassen:** Bass (Dröhnen) ±6 dB und Auspuff-Bellen 50–150 % (wie weit Schalldämpfer und Innenraum
@@ -105,8 +107,18 @@ Dienst auf dem Head Unit) den Sound und schreibt ihn in einen Audiokanal des BMW
 App bittet den BMW-Audiomanager, diesen Kanal mit den Lautsprechern zu verbinden – nur solange Ton
 gebraucht wird.
 
-Der **Tonweg** ist in den Einstellungen unter „Experten“ wählbar. Standard ist der **Overlay-Mix**: Der Motorsound
-liegt über der Musik, die weiterläuft. Weitere Wege (CarLife exklusiv, CarLife-Navi, MainSink,
+Der **Tonweg** ist in den Einstellungen unter „Experten“ wählbar. Standard ist **Automatisch**:
+
+- **In der Musik:** Solange CarPlay oder Android Auto Musik spielt, addiert der Dienst den Motorsound auf die Musik im
+  gemeinsamen Speicher (SmartX-Ringpuffer), kurz bevor das Auto sie abholt. Er öffnet keinen Kanal und braucht keine
+  Verbindung. Der Aufbau des Puffers wird vorher streng geprüft; passt etwas nicht, bleibt der Speicher unangetastet und
+  es gilt der Overlay-Weg. Wird es zu laut für beides, gibt die Musik kurz bis 2,5 dB nach.
+- **Overlay-Mix:** sonst. Der Motorsound liegt als eigener Kanal über der Musik, die weiterläuft, aber abgesenkt wird.
+
+**Verstärker direkt** ist ein Versuch (nur im Stand): Der Verstärker hat einen zweiten Eingang; ob das Auto unseren Kanal
+darauf legen lässt, zeigt sich erst im Auto. Alles steht danach im QR-Log.
+
+Weitere Wege (CarLife exklusiv, CarLife-Navi, MainSink,
 CarPlay-Kanal, ALSA direkt) sind zum Ausprobieren in anderen Autos und Ausstattungen gedacht.
 
 Die Verbindung im Audiomanager braucht im Auto rund 6 Sekunden, bis sie hörbar ist. Darum baut Sound Drive sie schon
@@ -130,14 +142,14 @@ Voraussetzung ist ein iDrive 7 (MGU) mit Root-Zugang und installiertem
    (Wer „Iconix Sounds“ schon hat, bekommt den neuen Namen einfach als Update.)
 3. App öffnen, **Testsound** drücken – fertig. Updates kommen über den Store.
 
-Klappt es nicht auf Anhieb: In der Statuszeile sollte „Overlay-Mix: verbunden“ stehen. Wenn nicht,
+Klappt es nicht auf Anhieb: In der Statuszeile sollte „In der CarPlay-Musik“ oder „Overlay-Mix: verbunden“ stehen. Wenn nicht,
 **Audio-Diagnose** öffnen, ein Foto machen, den nächsten **Tonweg** probieren und gern ein
 [Issue](https://github.com/Nico1003/sound-drive/issues) mit dem Foto anlegen.
 
 | Komponente | Version |
 |---|---|
-| Sound Drive (App) | 1.0.8 |
-| Sound Drive Audio (Tool) | 1.0.8 |
+| Sound Drive (App) | 1.0.9 |
+| Sound Drive Audio (Tool) | 1.0.9 |
 
 ---
 
@@ -186,8 +198,10 @@ einem Fahrlehrer auf dem Beifahrersitz:
 Alles läuft mit Node, ohne Auto:
 
 ```bash
-node kit/tools/test_iconix_route.js
+node kit/tools/test_quick.js
 ```
+
+(kurz, unter 15 s; `--full` prüft alles samt Dauertests und braucht einige Minuten)
 
 ```bash
 node kit/tools/iconix_calibrate.js --wav docs/sounds --rate 24000
@@ -252,6 +266,12 @@ Repository enthält nur den Teil, den die beiden Apps brauchen. Doku zum Kit:
   [loenne007/idrive-enginesound](https://github.com/loenne007/idrive-enginesound) dokumentiert haben; von dort
   stammt auch die Beobachtung, dass der Lautstärkeknopf bei der Haupt-Senke sichtbar ist und das Auto die Quelle wie
   eine Durchsage behandelt (eigene Umsetzung, kein übernommener Code)
+- Der Aufbau des SmartX-Ringpuffers ist aus Intels offenem Quelltext abgelesen
+  ([intel/AVB-AudioModules](https://github.com/intel/AVB-AudioModules), BSD-3-Clause; eigene Umsetzung); dass CarPlay genau
+  diesen Puffer benutzt, hat [NamelsMissing/mgu-apps](https://github.com/NamelsMissing/mgu-apps) beobachtet
+- Die Eingänge des Verstärkers und die Liste der physischen Verbindungen haben
+  [Vizualyse/idrive-apps](https://github.com/Vizualyse/idrive-apps) und [pllanaio/bmw-airplay](https://github.com/pllanaio/bmw-airplay) dokumentiert
+  (eigene Umsetzung)
 
 ## Lizenz
 

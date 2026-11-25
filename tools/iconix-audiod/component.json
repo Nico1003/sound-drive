@@ -1,7 +1,7 @@
 {
   "id": "iconix-audiod",
   "kind": "tool",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "title": "Sound Drive Audio",
   "description": "Experimenteller Audio-Dienst für die App Sound Drive: erzeugt den Motor-Sound und gibt ihn über SmartX-Kanäle (Audiomanager-Weg der App) oder ALSA aus.",
   "mguHmi": ["ID7", "ID8"],

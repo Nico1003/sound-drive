@@ -129,6 +129,142 @@ def run(payload, stall_reads):
     return rc, pcm, reports.decode(), err.getvalue()
 
 
+def ring_bytes(per=256, num=4, ch=2, fmt=2, off=840, base=1024, name=b'x_ringBufferReal'):
+    """Ringpuffer-Datei wie von SmartX (Intel IasAudioRingBufferReal)."""
+    ss = 2 if fmt == 2 else 4
+    b = bytearray(base + per * num * ch * ss + 256)
+    b[100:100 + len(name)] = name
+    ap.Ring.HEAD.pack_into(b, off, per, num, ch, 0, 0, 0, fmt, ss, 0, 1, 1, 0, 0, base - off - 40)
+    return b
+
+
+def test_mix():
+    """Mischen in den Musikstrom: Aufbau prüfen, addieren, begrenzen; unter Linux auch die ganze Schleife."""
+    fails = 0
+    tmp = tempfile.mkdtemp()
+    path = os.path.join(tmp, 'smartx_T_p_ringbuffer')
+
+    def check(ok, what):
+        nonlocal fails
+        print(('ok  ' if ok else 'FAIL') + ' Mix: ' + what)
+        fails += not ok
+
+    def ring(**k):
+        with open(path, 'wb') as f:
+            f.write(ring_bytes(**k))
+        return ap.Ring(path, write=True)
+
+    def refused(**k):
+        try:
+            ring(**k).close()
+            return False
+        except ap.RingError:
+            return True
+    check(refused(name=b'nichts') and refused(ch=0) and refused(base=1026), 'unbekannter Aufbau wird abgelehnt')
+    slow = ap.audioop is None
+    for mode in ([True] if slow else [False, True]):
+        for fmt in (2, 3, 1):
+            r = ring(fmt=fmt)
+            m = ap.Mixer(r)
+            if mode:
+                m.fast = False
+            unit = {2: 1.0, 3: 65536.0, 1: 1 / 32768.0}[fmt]
+            for c in (0, 1):
+                for i in range(1024):
+                    v = (1000 if c == 0 else -2000) * unit
+                    r.planes[c][i] = v if fmt == 1 else int(v)
+            # über das Ende des Ringpuffers hinweg
+            m.add(900, array.array('h', [300, 70] * 256).tobytes())
+            L, R = [v / unit for v in r.planes[0]], [v / unit for v in r.planes[1]]
+            hit = set(range(900, 1024)) | set(range(0, 132))
+            ok = all(abs(L[i] - (1300 if i in hit else 1000)) < 0.6 and abs(R[i] - (-1930 if i in hit else -2000)) < 0.6 for i in range(1024))
+            check(ok, 'addiert genau (Format %d%s), auch über das Ende, sonst unberührt' % (fmt, ', ohne audioop' if mode else ''))
+            # laut + laut: nichts läuft über, kein Vorzeichenwechsel, danach wieder volle Musik
+            big = {2: 31000, 3: 31000 * 65536, 1: 31000 / 32768.0}[fmt]
+            worst = 0
+            for k in range(12):
+                for c in (0, 1):
+                    for i in range(256):
+                        r.planes[c][(k * 256 + i) % 1024] = big
+                m.add((k * 256) % 1024, array.array('h', [20000, 20000] * 256).tobytes())
+                worst = max(worst, max(abs(v / unit) for v in r.planes[0][(k * 256) % 1024:(k * 256) % 1024 + 256]))
+            lo = min(v / unit for v in r.planes[0])
+            duck = m.duck
+            for k in range(400):
+                for c in (0, 1):
+                    for i in range(0, 256):
+                        r.planes[c][(k * 256 + i) % 1024] = big if fmt == 1 else int(big)
+                m.add((k * 256) % 1024, bytes(1024))
+            ok = worst <= 32768 and lo > 20000 and duck == m.DUCK_MIN and m.duck > 0.97 and m.lim == 1.0
+            check(ok, 'laut + laut begrenzt (Spitze %d, Musik bis %.2f), danach %.2f' % (worst, duck, m.duck))
+            r.close()
+    if not hasattr(os, 'set_blocking') or sys.platform == 'win32':
+        print('     (Schleife: nur unter Linux)')
+        return fails
+    # ganze Schleife: "CarPlay" schreibt, "SmartX" liest, der Dienst schickt einen Ton
+    import mmap
+    import subprocess
+    import threading
+    import time
+    with open(path, 'wb') as f:
+        f.write(ring_bytes())
+    f = open(path, 'r+b')
+    mm = mmap.mmap(f.fileno(), 0)
+    mv = memoryview(mm)[1024:1024 + 8192].cast('h')
+    p = subprocess.Popen([sys.executable, os.path.join(ROOT, 'tools', 'iconix-audiod', 'alsa_play.py'), 'mix', 'T', '24000'],
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=dict(os.environ, ICONIX_SHM_DIR=tmp))
+    played, heard, stop = [0], [], [False]
+    threading.Thread(target=lambda: [played.__setitem__(0, int(x.split()[1])) for x in p.stdout], daemon=True).start()
+
+    def put(off, v):
+        mm[840 + off:844 + off] = int(v).to_bytes(4, 'little')
+
+    def car():
+        r = w = lvl = 0
+        t = time.monotonic()
+        while not stop[0]:
+            while lvl <= 768:
+                for c in (0, 1):
+                    mv[c * 1024 + w:c * 1024 + w + 256] = memoryview(array.array('h', [4000] * 256))
+                w = (w + 256) % 1024
+                lvl += 256
+                put(20, w)
+                put(32, lvl)
+            t += 256 / 48000.0 * 4        # viermal langsamer als echt: auch auf einem lahmen Prüfrechner sicher
+            time.sleep(max(0, t - time.monotonic()))
+            heard.extend(mv[r:r + 256].tolist())
+            r = (r + 256) % 1024
+            lvl -= 256
+            put(16, r)
+            put(32, lvl)
+    th = threading.Thread(target=car)
+    th.start()
+    sent, t0 = 0, time.monotonic()
+    while time.monotonic() - t0 < 3.0 and p.poll() is None:
+        due = 1920 * 2 - (sent - played[0])
+        if due > 0:
+            p.stdin.write(array.array('h', [2000, 2000] * due).tobytes())
+            p.stdin.flush()
+            sent += due
+        time.sleep(0.01)
+    n = len(heard)
+    p.stdin.close()
+    time.sleep(1.3)
+    stop[0] = True
+    th.join()
+    rc = p.wait(3)
+    err = p.stderr.read().decode()
+    mid = heard[n // 3:n - 1200]
+    check(rc == 0 and 'mischt in T' in err and n > 8000, 'Schleife läuft und endet sauber (Code %s)' % rc)
+    good = sum(1 for v in mid if abs(v - 6000) <= 3)
+    check(good >= len(mid) * 0.98, 'Musik + Motor durchgehend (%d von %d)' % (good, len(mid)))
+    check(max(abs(b - a) for a, b in zip(heard[n - 1200:], heard[n - 1199:])) < 600 and abs(heard[-1] - 4000) <= 2, 'am Ende weich ausgeblendet, Musik danach unverändert')
+    out = subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'iconix-audiod', 'alsa_play.py'), 'rings'], stdout=subprocess.PIPE,
+                         env=dict(os.environ, ICONIX_SHM_DIR=tmp)).stdout.decode()
+    check('"name": "T"' in out and '"alive": false' in out, 'rings listet den Kanal')
+    return fails
+
+
 def main():
     fails = 0
     # 0,5 s Rampe als Mono-S16LE
@@ -178,6 +314,7 @@ def main():
     ok = rc == 0 and n == 2 and len(data) > len(payload) + pre * 2
     print(('ok  ' if ok else 'FAIL') + ' zwei Hänger -> zwei Meldungen (%d)' % n)
     fails += not ok
+    fails += test_mix()
     print('Alle alsa_play-Tests bestanden' if not fails else '%d Test(s) fehlgeschlagen' % fails)
     return 1 if fails else 0
 

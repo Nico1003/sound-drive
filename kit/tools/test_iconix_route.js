@@ -352,7 +352,7 @@ test('Autostart: App hat einen Hintergrund-Einstieg (background) und app.json au
   assert.strictEqual(JSON.parse(fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/app.json'), 'utf8')).autostart, true);
 });
 
-test('Vorlauf: Start 100 ms, Aussetzer +30 ms, ruhig wieder knapper – aber nicht wieder bis zum nächsten Aussetzer', () => {
+test('Vorlauf: Start 160 ms, Aussetzer +30 ms, ruhig wieder knapper – aber nicht wieder bis zum nächsten Aussetzer', () => {
   const eng = new E.Engine({ log() {} });
   eng.out = { child: {}, blocked: false, fmt: { rate: 24000, ch: 1 }, step: E.Output.prototype.step, list: [], opts: { device: 'x' },
     played: 0, underruns: 0, write() { return true; }, start() { return true; }, stop() {} };
@@ -374,6 +374,11 @@ test('Vorlauf: Start 100 ms, Aussetzer +30 ms, ruhig wieder knapper – aber nic
     const e2 = new E.Engine({ log() {} }); e2.out = Object.assign({}, eng.out, { underruns: 0 }); e2.synth.configure({ enabled: true });
     for (let s = 0; s < 33 * 60; s++) { t += 1000; e2.lastParams = t; if (s % 20 === 19 && (e2.fbLead || 100) < 85) e2.out.underruns++; e2._tick(); }
     assert.ok(e2.out.underruns <= 3, 'Aussetzer in 33 min: ' + e2.out.underruns);
+    // eine lange Pause zwischen zwei Takten hebt die Untergrenze, bevor sie zum Aussetzer wird
+    const e3 = new E.Engine({ log() {} }); e3.out = Object.assign({}, eng.out, { underruns: 0 }); e3.synth.configure({ enabled: true });
+    e3.lastParams = t; e3._tick(); t += 110; e3.lastParams = t; e3._tick();
+    for (let i = 0; i < 60; i++) { for (let k = 0; k < 8; k++) { t += 1300; e3.lastParams = t; e3._tick(); } }
+    assert.ok(e3.fbLead >= 140 && e3.fbLead <= 160, 'nach 110 ms Pause bleibt Reserve: ' + e3.fbLead);
   } finally { setClock(realNow); }
 });
 
@@ -896,13 +901,13 @@ test('Dienst: langsames Öffnen des Kanals (nach dem Hochfahren) – kein Stau, 
   try {
     o.startedAt = t; eng.lastTick = t;
     run(20000);                                         // 20 s bis der Kanal offen ist
-    assert.ok(pipe <= 24 * 110, 'nur der Vorlauf wartet: ' + Math.round(pipe / 24) + ' ms');
+    assert.ok(pipe <= 24 * (E.FB_LEAD_START + 10), 'nur der Vorlauf wartet: ' + Math.round(pipe / 24) + ' ms');
     assert.ok(eng.status().opening && !eng.status().playing);
     o._open();
     assert.strictEqual(o.openMs, 20000);
     run(3000, () => { pipe = Math.max(0, pipe - 240); o.played = o.sent - pipe; o.gotPos = true; o.blocked = false; });
     const lat = (o.sent - o.played) / 24;
-    assert.ok(lat <= 130, 'Verzögerung danach ' + Math.round(lat) + ' ms');
+    assert.ok(lat <= E.FB_LEAD_START + 30, 'Verzögerung danach ' + Math.round(lat) + ' ms');
     assert.ok(eng.status().playing && !eng.status().opening);
     // selbst mit Stau (Player ohne Rückmeldung, dann doch): wird wieder abgebaut
     const e2 = new E.Engine({ log() {} }), p = Object.assign(new E.Output(() => {}, () => {}, { device: 'x' }), { fmt: { rate: 24000, ch: 1 }, backend: 'x', error: null, played: 0, gotPos: false, opened: true, openedAt: t, startedAt: t });
@@ -911,7 +916,7 @@ test('Dienst: langsames Öffnen des Kanals (nach dem Hochfahren) – kein Stau, 
     for (let i = 0; i < 300; i++) { t += 10; e2.params({ rpm: 2000, load: 0.5, speed: 50 }); e2._tick(); }
     assert.ok(q > 24000, 'Takt nach Uhr staut');
     for (let i = 0; i < 600; i++) { t += 10; q = Math.max(0, q - 240); p.played = p.sent - q; p.gotPos = true; e2.params({ rpm: 2000, load: 0.5, speed: 50 }); e2._tick(); }
-    assert.ok(q / 24 < 130, 'Stau abgebaut: ' + Math.round(q / 24) + ' ms');
+    assert.ok(q / 24 < E.FB_LEAD_START + 30, 'Stau abgebaut: ' + Math.round(q / 24) + ' ms');
   } finally { setClock(realNow); }
 });
 
@@ -1116,6 +1121,208 @@ test('Lautstärkeknopf: Auto ohne Verbindungszustand – Drehen wird trotzdem er
   await r._knobTick(); r.knobQuiet = 0;
   am.vol = 23; await r._knobTick();
   assert.ok(r.knobHeld(), 'Dreh erkannt, Knopf gehört der Musik');
+});
+
+// ---- Mischen in den Musikstrom ------------------------------------------------
+/** Ringpuffer-Datei wie von SmartX (Intel IasAudioRingBufferReal), Kopf bei off. */
+function ringFile(dir, channel, o) {
+  o = Object.assign({ off: 840, per: 256, num: 4, ch: 2, fmt: 2, r: 0, w: 0, lvl: 0, base: 1024, name: true, twice: false }, o);
+  const ss = o.fmt === 2 ? 2 : 4, b = Buffer.alloc(o.base + o.per * o.num * o.ch * ss + 512);
+  if (o.name) b.write('smartx_' + channel + '_p_ringbuffer_ringBufferReal', 100, 'latin1');
+  const head = (off) => {
+    [o.per, o.num, o.ch, 0, o.r, o.w, o.fmt, ss, o.lvl].forEach((v, i) => b.writeUInt32LE(v, off + i * 4));
+    b[off + 36] = 1; b[off + 37] = 1;
+    b.writeUInt32LE((o.base - off - 40) >>> 0, off + 40); b.writeInt32LE(o.base - off - 40 < 0 ? -1 : 0, off + 44);
+  };
+  head(o.off); if (o.twice) head(o.off - 400);
+  const f = path.join(dir, 'smartx_' + channel + '_p_ringbuffer');
+  fs.writeFileSync(f, b);
+  return { file: f, set(off, v) { const fd = fs.openSync(f, 'r+'), x = Buffer.alloc(4); x.writeUInt32LE(v, 0); fs.writeSync(fd, x, 0, 4, off); fs.closeSync(fd); }, o };
+}
+
+test('Musik-Mix: Ringpuffer wird erkannt (auch Kopf nach den Daten), Fremdes und Mehrdeutiges nicht', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iconix-ring-'));
+  const old = process.env.ICONIX_SHM_DIR; process.env.ICONIX_SHM_DIR = dir;
+  try {
+    const look = (o, set) => { const r = ringFile(dir, 'C', o); if (set) set(r); const p = new E.MixProbe('C'); p.poll(5000); const s = p.state(5000); p._close(); return s; };
+    assert.strictEqual(look({}).ring, '4x256 2ch s16');
+    assert.strictEqual(look({ fmt: 1, per: 192 }).ring, '4x192 2ch f32');
+    assert.strictEqual(look({ off: 1024 + 4096 + 64, base: 1024 }).ring, '4x256 2ch s16', 'Zeiger nach hinten');
+    assert.ok(/Name fehlt/.test(look({ name: false }).err));
+    assert.ok(/2 Treffer/.test(look({ twice: true }).err));
+    assert.ok(/0 Treffer/.test(look({ ch: 0 }).err));
+    assert.ok(/0 Treffer/.test(look({ w: 5000 }).err), 'Position außerhalb');
+    assert.ok(/0 Treffer/.test(look({}, (r) => r.set(r.o.off + 40, 99999999)).err), 'Daten außerhalb der Datei');
+    fs.unlinkSync(path.join(dir, 'smartx_C_p_ringbuffer'));
+    const p = new E.MixProbe('C'); p.poll(5000);
+    assert.deepStrictEqual(p.state(5000), { alive: false, err: 'ENOENT', ring: null });
+  } finally { if (old === undefined) delete process.env.ICONIX_SHM_DIR; else process.env.ICONIX_SHM_DIR = old; }
+});
+
+test('Musik-Mix: "läuft" nur, solange sich die Schreibposition bewegt; neu angelegter Kanal wird wiedergefunden', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iconix-ring-'));
+  const old = process.env.ICONIX_SHM_DIR; process.env.ICONIX_SHM_DIR = dir;
+  try {
+    const r = ringFile(dir, 'C', {});
+    const p = new E.MixProbe('C');
+    let t = 10000;
+    for (let i = 0; i < 20; i++) { t += 40; p.poll(t); }
+    assert.ok(!p.state(t).alive, 'steht');
+    for (let i = 0; i < 20; i++) { t += 40; r.set(r.o.off + 20, (i * 256) % 1024); p.poll(t); }
+    assert.ok(p.state(t).alive, 'läuft');
+    for (let i = 0; i < 20; i++) { t += 40; p.poll(t); }
+    assert.ok(!p.state(t).alive, 'steht wieder');
+    p._close(); fs.unlinkSync(r.file);
+    t += 1100; p.poll(t);
+    assert.strictEqual(p.state(t).ring, null);
+    const r2 = ringFile(dir, 'C', { per: 480, base: 4096 });
+    t += 1100; p.poll(t);
+    assert.strictEqual(p.state(t).ring, '4x480 2ch s16');
+    r2.set(r2.o.off + 20, 480); t += 40; p.poll(t);
+    assert.ok(p.state(t).alive);
+    p._close();
+  } finally { if (old === undefined) delete process.env.ICONIX_SHM_DIR; else process.env.ICONIX_SHM_DIR = old; }
+});
+
+test('Musik-Mix: Player-Aufruf, Format 24 kHz Stereo, Dienst beobachtet nur verlangte Kanäle', () => {
+  assert.deepStrictEqual(E.formatOf('mix:CarPlayMain_CF_48_STEREO'), { rate: 24000, ch: 2 });
+  assert.ok(E.isSmartx('mix:X') && E.isMix('mix:X') && !E.isMix('plug:smartx:X'));
+  assert.strictEqual(E.resolveSmartx('mix:X', []), 'mix:X');
+  const eng = new E.Engine({ log() {} });
+  assert.strictEqual(eng.status().mix, null);
+  eng.configure({ mixProbe: ['CarPlayMain_CF_48_STEREO', '../../etc/passwd'] });
+  assert.deepStrictEqual(Object.keys(eng.status().mix), ['CarPlayMain_CF_48_STEREO']);
+  eng.configure({ volume: 0.4 });
+  assert.strictEqual(eng.probes.length, 1, 'Einstellungen ohne mixProbe ändern nichts');
+  eng.configure({ mixProbe: [] });
+  assert.ok(eng.status().mix === null && !eng.probeTimer);
+});
+
+test('Tonweg "auto": CarPlay-Musik -> Mix ohne Audiomanager-Verbindung, Pause/Radio -> Overlay', async () => {
+  const { am, signals } = fakeAm();
+  const r = new CarRoute(signals, quiet, null);
+  const realNow = setClock(null); let t = realNow(); setClock(() => t);
+  const CH = 'CarPlayMain_CF_48_STEREO';
+  const run = async (ms, alive, err) => {
+    for (let i = 0; i < ms / 500; i++) {
+      t += 500;
+      const id = r.pick('auto', { [CH]: { alive, err: null, ring: '4x256 2ch s16' } }, err);
+      r.want(id, true); await r._step(); await new Promise((ok) => setImmediate(ok));
+    }
+    return r.pickId;
+  };
+  const own = () => am.conns.filter((c) => c.sourceID === 1048).length;
+  try {
+    am.conns.push({ mainConnectionID: 7, sourceID: 266, sinkID: 1024, connectionState: 2 });
+    assert.strictEqual(await run(1000, false), 'overlay'); await run(1000, false);
+    assert.strictEqual(own(), 1, 'ohne laufende Musik: Overlay');
+    assert.strictEqual(await run(3000, true), 'mixCarplay');
+    assert.strictEqual(own(), 0, 'im Mix keine eigene Verbindung: Knopf und Lautstärke bleiben bei der Musik');
+    assert.ok(r.audible() && !r.knobHeld());
+    am.calls.length = 0; await run(10000, true);
+    assert.ok(!am.calls.some((c) => /^connect/.test(c)), 'verbindet im Mix nichts');
+    // Knopf: 20 Schritte – keine Pause, keine Verbindung
+    for (let i = 0; i < 20; i++) { am.vol++; t += 200; await r._knobTick(); }
+    assert.ok(!r.knobHeld() && r.knobTurns === 0);
+    assert.strictEqual(await run(1000, false), 'mixCarplay', 'kurze Lücke zwischen zwei Titeln');
+    assert.strictEqual(await run(500, true), 'mixCarplay');
+    assert.strictEqual(await run(4000, false), 'overlay', 'Pause: Overlay');
+    assert.strictEqual(own(), 1);
+    await run(3000, true);
+    assert.strictEqual(r.pickId, 'mixCarplay');
+    // Radio gewählt: sofort Overlay, auch wenn der Ringpuffer noch läuft
+    am.conns = am.conns.filter((c) => c.sourceID !== 266); am.conns.push({ mainConnectionID: 8, sourceID: 1, sinkID: 1024, connectionState: 2 });
+    assert.strictEqual(await run(3000, true), 'overlay');
+    // zurück, dann schlägt das Mischen fehl: eine Weile Overlay, danach neuer Versuch
+    am.conns = am.conns.filter((c) => c.sourceID !== 1); am.conns.push({ mainConnectionID: 9, sourceID: 266, sinkID: 1024, connectionState: 2 });
+    await run(4000, true); assert.strictEqual(r.pickId, 'mixCarplay');
+    await run(500, true, 'mmap'); assert.strictEqual(await run(30000, true), 'overlay');
+    assert.strictEqual(await run(40000, true), 'mixCarplay');
+    // Telefon: beim Mischen weiterhin leiser
+    am.conns.push({ mainConnectionID: 10, sourceID: 256, sinkID: 1024, connectionState: 2 }); r.srcNames[256] = 'HFPSource_1';
+    await run(3000, true); assert.ok(r.ducked);
+  } finally { setClock(realNow); }
+  assert.strictEqual(new CarRoute(signals, quiet, null).pick('auto', null), 'overlay', 'alter Dienst ohne Musik-Mix');
+  assert.strictEqual(new CarRoute(signals, quiet, null).pick('overlayOnly', null), 'overlay');
+  assert.strictEqual(new CarRoute(signals, quiet, null).pick('carlifeNav', null), 'carlifeNav');
+  const app = JSON.parse(fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/app.json'), 'utf8')).settings.filter((x) => x.key === 'route')[0];
+  assert.strictEqual(app.default, 'auto'); assert.deepStrictEqual(app.aliases, { overlay: 'auto' });
+  app.options.forEach((o) => assert.ok(CarRoute.setting(o[0]), o[0]));
+});
+
+test('Ausgleich: Motorsound bleibt beim Drehen gleich laut; Ansagen zählen nicht', async () => {
+  const { am, signals } = fakeAm();
+  const r = new CarRoute(signals, quiet, null);
+  const realNow = setClock(null); let t = realNow(); setClock(() => t);
+  const got = []; r.onComp = (d) => got.push(d);
+  const tick = async (ms) => { for (let i = 0; i < ms / 200; i++) { t += 200; await r._knobTick(); if (i % 5 === 0) { await r._step(); await new Promise((ok) => setImmediate(ok)); } } };
+  try {
+    am.conns.push({ mainConnectionID: 7, sourceID: 266, sinkID: 1024, connectionState: 2 });
+    r.setComp(1); r.auto = true; r.want('mixCarplay', true);
+    am.vol = 25; await tick(3000);
+    assert.strictEqual(r.compDb(), 0, 'bei der Bezugslautstärke unverändert');
+    am.vol = 28; await tick(400);
+    assert.strictEqual(r.compDb(), -3, 'lauter gedreht: sofort gegengeregelt');
+    am.vol = 20; await tick(400); assert.strictEqual(r.compDb(), -3, 'großer Sprung: erst nach einer Weile');
+    await tick(CarRoute.COMP_STABLE_MS + 400); assert.strictEqual(r.compDb(), 5);
+    am.vol = 0; await tick(CarRoute.COMP_STABLE_MS + 400); assert.strictEqual(r.compDb(), 12, 'nach oben begrenzt');
+    am.vol = 25; await tick(CarRoute.COMP_STABLE_MS + 400);
+    // Navi-Ansage: das Auto zeigt deren Lautstärke
+    am.conns.push({ mainConnectionID: 8, sourceID: 285, sinkID: 1024, connectionState: 2 }); am.vol = 21;
+    await tick(8000); assert.strictEqual(r.compDb(), 0, 'Ansage ändert nichts');
+    am.conns = am.conns.filter((c) => c.sourceID !== 285); am.vol = 25; await tick(4000);
+    assert.strictEqual(r.compDb(), 0);
+    assert.ok(!r.knobHeld() && !am.conns.some((c) => c.sourceID === 1048), 'keine Pause, keine eigene Verbindung');
+    r.setComp(0); assert.strictEqual(r.compDb(), 0);
+    am.vol = 10; await tick(6000); assert.strictEqual(r.compDb(), 0, 'aus: folgt dem Knopf');
+    assert.ok(got.length >= 4);
+  } finally { setClock(realNow); }
+});
+
+test('Ausgleich im Dienst: Pegel ändert sich weich, läuft nie über', () => {
+  const g = new E.OutGain(), n = 240;
+  const block = (a) => { const f = new Float32Array(n * 2); for (let i = 0; i < n; i++) f[2 * i] = f[2 * i + 1] = a; return f; };
+  let f = block(0.5); g.run(f, n, 24000); assert.ok(f.every((v) => v === 0.5), 'ohne Ausgleich unverändert');
+  g.set(-6, 1); let last = 0.5;
+  for (let k = 0; k < 60; k++) { f = block(0.5); g.run(f, n, 24000); for (let i = 0; i < n; i++) { assert.ok(Math.abs(f[2 * i] - last) < 0.01, 'Sprung'); last = f[2 * i]; } }
+  assert.ok(Math.abs(last - 0.5 * Math.pow(10, -0.3)) < 0.002);
+  g.set(12, 1); let top = 0;
+  for (let k = 0; k < 100; k++) { f = block(0.6); g.run(f, n, 24000); for (const v of f) top = Math.max(top, v); }
+  assert.ok(top <= 0.97, 'Spitze ' + top);
+  g.set(0, E.MIX_BASE); for (let k = 0; k < 200; k++) { f = block(0.6); g.run(f, n, 24000); }
+  assert.ok(Math.abs(f[f.length - 1] - 0.6 * E.MIX_BASE) < 0.002, 'danach wieder normal');
+  g.set(NaN, 1); assert.strictEqual(g.want, 1);
+});
+
+test('Verstärker direkt (Versuch): Liste der Verbindungen lesen, Erfolg und Ablehnung', async () => {
+  const rec = (id, s, sn, k, kn, st) => Buffer.concat([Buffer.from([id, 0, s & 255, s >> 8]), Buffer.from(sn + '\0'), Buffer.from([k & 255, k >> 8]), Buffer.from(kn + '\0'), Buffer.from([st])]);
+  const raw = Buffer.concat([rec(1, 401, 'Media_Overlay_Converter_Source', 395, 'MGU_GW_1_SINK', 2), rec(2, 145, 'RAM_GW_4_SOURCE', 130, 'InputB_Main', 2)]);
+  const l = CarRoute.parseAv(raw, 2);
+  assert.deepStrictEqual(l[1], { id: 2, source: 145, sourceName: 'RAM_GW_4_SOURCE', sink: 130, sinkName: 'InputB_Main', state: 2 });
+  assert.ok(/401 Media_Overlay_Converter_Source->395/.test(CarRoute.avText(l)));
+  assert.throws(() => CarRoute.parseAv(null, 1));
+  const realTimeout = global.setTimeout;
+  for (const ok of [true, false]) {
+    const { am, signals } = fakeAm();
+    const call = signals.call;
+    signals.proxy = async (iface) => ({ iface });
+    signals.call = async (p, m, x) => {
+      if (m === 'StatusAvConnections') return { STAT_NUMBER_AV_CONNECTIONS_WERT: 2, STAT_AV_CONNECTION: raw };
+      if (m === 'connect' && x.sinkID === 130 && !(ok && x.sourceID === 401)) { am.calls.push('nein ' + x.sourceID); return { amError: 'E_NOT_POSSIBLE' }; }
+      return call(p, m, x);
+    };
+    const r = new CarRoute(signals, quiet, null);
+    global.setTimeout = (fn, ms) => realTimeout(fn, Math.min(ms, 1));
+    try { r.want('direct', true); await r._step(); } finally { global.setTimeout = realTimeout; }
+    if (ok) {
+      assert.deepStrictEqual(am.conns.map((c) => c.sourceID + '->' + c.sinkID), ['401->130'], 'nur die direkte Verbindung bleibt');
+      assert.ok(r.audible());
+      r.want('direct', false); await r._step(); assert.strictEqual(am.conns.length, 0);
+    } else {
+      assert.strictEqual(am.conns.length, 0); assert.ok(/nicht erreichbar/.test(r.lastError));
+      const n = am.calls.length; r.nextTry = 0; await r._step(); assert.strictEqual(am.calls.length, n, 'nicht gleich wieder versuchen');
+    }
+  }
 });
 
 (async () => {

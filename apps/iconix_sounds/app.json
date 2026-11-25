@@ -2,14 +2,14 @@
   "id": "iconix_sounds",
   "title": "Sound Drive",
   "description": "Virtueller Motorsound abhängig von Drehzahl und Last: Power Four, Supra, Flat Four, Flat Six, Rally Five, Muscle V8, Track V10 und Grand V12. Ton über die Fahrzeuglautsprecher (Audiomanager + SmartX), startet mit dem Auto. Braucht das Tool Sound Drive Audio.",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "vendor": "custom",
   "loggingId": "ICXS",
   "iconGlyph": "engine",
   "mguHmi": ["ID7", "ID8"],
   "autostart": true,
   "requires": {
-    "iconix-audiod": "1.0.8"
+    "iconix-audiod": "1.0.9"
   },
   "signals": {
     "de.bmw.infotainment.vehicle.CDS": {
@@ -39,6 +39,13 @@
         "getListMainSourceSoundProperties"
       ],
       "_optional": "Ton auf den Fahrzeuglautsprechern (Audiomanager-Verbindung)"
+    },
+    "de.bmw.infotainment.systemfunctions.diagnostics.job.Ent.DiagEntAudio": {
+      "_instances": "Inst1",
+      "_methods": [
+        "StatusAvConnections"
+      ],
+      "_optional": "Liste der Audio-Verbindungen in der Audio-Diagnose"
     },
     "org.genivi.am.routinginterface.RoutingControlObserver": {
       "_instances": "1",
@@ -148,8 +155,22 @@
       "default": true
     },
     {
+      "key": "knobComp",
+      "label": "Motorsound unabhaengig vom Lautstaerkeknopf",
+      "type": "choice",
+      "default": 1,
+      "options": [
+        [0, "Aus (folgt dem Knopf)"],
+        [0.6, "Schwach (0,6 dB je Stufe)"],
+        [0.8, "Etwas schwaecher (0,8 dB)"],
+        [1, "Normal (1 dB je Stufe)"],
+        [1.3, "Etwas staerker (1,3 dB)"],
+        [1.6, "Stark (1,6 dB je Stufe)"]
+      ]
+    },
+    {
       "key": "knobMusic",
-      "label": "Lautstaerkeknopf regelt die Musik",
+      "label": "Lautstaerkeknopf regelt die Musik (Overlay-Mix)",
       "type": "bool",
       "default": true
     },
@@ -264,15 +285,18 @@
       "key": "route",
       "label": "Tonweg (zum Testen)",
       "type": "choice",
-      "default": "overlay",
+      "default": "auto",
+      "aliases": {"overlay": "auto"},
       "options": [
-        ["overlay", "1 Overlay-Mix (Musik laeuft weiter)"],
+        ["auto", "Automatisch (in der Musik, sonst Overlay)"],
+        ["overlayOnly", "1 Overlay-Mix (Auto senkt Musik ab)"],
         ["carlife", "2 CarLife exklusiv (Musik pausiert)"],
         ["carlifeNav", "3 CarLife-Navi-Mix"],
         ["overlayMain", "4 Overlay auf MainSink"],
         ["carlifeMain", "5 CarLife auf MainSink"],
         ["carplay", "6 CarPlay-Kanal (ohne Audiomanager)"],
-        ["alsa", "7 ALSA direkt (Ausgabegeraet unten)"]
+        ["alsa", "7 ALSA direkt (Ausgabegeraet unten)"],
+        ["direct", "8 Verstaerker direkt (Versuch, nur im Stand)"]
       ],
       "group": "Experten"
     },

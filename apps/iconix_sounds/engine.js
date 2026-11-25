@@ -30,15 +30,18 @@ const IDLE_TICK_MS = 200;    // ohne Ton nur 5 Wakeups/s; neue Fahrzeugdaten ode
 const LEAD_MS = Number(process.env.ICONIX_LEAD_MS) || 160;
 // Mit Rückmeldung des Players (alsa_play.py meldet gespielte Frames): so viel Ton steht höchstens an
 // (ALSA-Puffer + Pipe). Das ist die Verzögerung zwischen Fahrzeugdaten und Lautsprecher.
-// Untergrenze 60 ms (siehe FB_LEAD_START für den Start und die Anpassung).
-const FB_LEAD_MS = Number(process.env.ICONIX_FB_LEAD_MS) || 60;
+// Untergrenze 80 ms (siehe FB_LEAD_START für den Start und die Anpassung).
+const FB_LEAD_MS = Number(process.env.ICONIX_FB_LEAD_MS) || 80;
 const FB_LEAD_MAX = 200;
 // Start großzügig (Head Unit beim Hochfahren ausgelastet -> sonst Aussetzer/Quietschen), danach alle 10 s
 // ohne Aussetzer 10 ms knapper bis zur Untergrenze; bei einem Aussetzer sofort +30 ms.
 // Die Untergrenze merkt sich, wo es zu knapp war (Vorlauf beim Aussetzer + 20 ms): Früher ging es nach jedem Aussetzer
 // wieder bis 60 ms hinunter – bis zum nächsten, also rund alle 30 s einer (62 in 33 min). Sie sinkt nur alle
 // FB_FLOOR_MS ohne Aussetzer um 10 ms.
-const FB_LEAD_START = 100;
+// Dazu zählt auch die längste Pause zwischen zwei Takten: Im Auto waren es kurz nach dem Start 87 ms – mit 100 ms Vorlauf
+// beim Start ergab das drei Aussetzer, bevor der Regler reagierte (Knarzen am Anfang).
+const FB_LEAD_START = 160;
+const FB_GAP_MS = 45;        // so viel Reserve über der längsten gemessenen Pause
 const FB_FLOOR_MS = 600000;
 const BUFFER_US = Number(process.env.ICONIX_BUFFER_US) || 200000; // Puffer des Abspielprogramms
 const STALE_MS = 1500;       // ohne Daten -> ausblenden
@@ -47,6 +50,9 @@ const MAX_CHUNK = 4096;
 // SmartX: Puffer des Kanals. Zählt zum Vorlauf (kein zusätzlicher Verzug), gibt dem Player aber Luft; nimmt der Kanal
 // ihn nicht, gilt der kleinere (alsa_play.py)
 const SMARTX_BUFFER_US = Number(process.env.ICONIX_SMARTX_BUFFER_US) || 60000;
+// Mischen in den Musikstrom: Der Motorsound kommt mit 24 kHz Stereo (halbe Rechenzeit), alsa_play.py macht 48 kHz daraus
+const MIX_RATE = 24000;
+const MIX_POLL_MS = 40, MIX_FIND_MS = 1000, MIX_ALIVE_MS = 400;   // Musikstrom beobachten: Takt, Suche, gilt so lange als laufend
 const SMARTX_RETRY_MS = 3000; // SmartX-Kanal ließ sich nicht öffnen -> so oft erneut probieren
 
 // ---------------------------------------------------------------------------
@@ -149,7 +155,9 @@ function smartxEndpoints() {
   });
   return out.sort();
 }
-function isSmartx(d) { return /(^|:)smartx:/.test(d || ''); }
+/** Musikstrom eines SmartX-Kanals ("mix:<Kanal>"): Der Motorsound wird dort hineingemischt (alsa_play.py mix). */
+function isMix(d) { return /^mix:/.test(d || ''); }
+function isSmartx(d) { return /(^|:)smartx:/.test(d || '') || isMix(d); }
 /** "smartx:<Name>" -> "plug:smartx:<Kanal>" (exakter Kanal oder erster, der mit <Name>_ beginnt). */
 function resolveSmartx(d, list) {
   if (!/^smartx:/.test(d || '')) return d;
@@ -165,11 +173,106 @@ function resolveSmartx(d, list) {
 }
 /** Ausgabeformat eines Geräts: SmartX-Kanäle nach Namen, sonst Synthese-Rate Stereo. */
 function formatOf(dev) {
+  if (isMix(dev)) return { rate: MIX_RATE, ch: 2 };
   const m = /smartx:.*_CF_(\d+)/.exec(dev || '');
   const k = m ? Number(m[1]) : 0;
   const rate = k === 24 ? 24000 : (k === 16 ? 16000 : RATE);
   return { rate: rate, ch: /smartx:.*MONO/i.test(dev || '') ? 1 : 2 };
 }
+
+/**
+ * Ausgangspegel: gleicht den Lautstärkeknopf des Autos aus (cfg.outDb, gegenläufig zur Auto-Lautstärke). Änderungen gehen
+ * über ~60 ms, und über OUT_TOP wird leiser geregelt statt abgeschnitten.
+ */
+const OUT_TOP = 0.92;
+// Im Musikstrom ist die Musik bis an die Grenze ausgesteuert: Motorsound dort etwas leiser ansetzen
+const MIX_BASE = 0.7;
+function OutGain() { this.want = 1; this.g = 1; this.lim = 1; }
+OutGain.prototype.set = function (db, base) {
+  const d = isFinite(+db) ? Math.max(-30, Math.min(15, +db)) : 0;
+  this.want = Math.pow(10, d / 20) * (base || 1);
+};
+OutGain.prototype.run = function (f32, frames, rate) {
+  if (!frames) return;
+  if (this.g === 1 && this.want === 1 && this.lim === 1) return;
+  const n = frames * 2;
+  let peak = 0;
+  for (let i = 0; i < n; i++) { const v = f32[i] < 0 ? -f32[i] : f32[i]; if (v > peak) peak = v; }
+  let g1 = this.g + (this.want - this.g) * Math.min(1, frames / (rate * 0.06));
+  if (Math.abs(g1 - this.want) < 1e-4) g1 = this.want;
+  const top = peak * Math.max(this.g, g1), need = top > OUT_TOP ? OUT_TOP / top : 1;
+  const l1 = need < this.lim ? need : Math.min(need, this.lim + frames / (rate * 0.4));
+  const a = this.g * this.lim, b = g1 * l1;
+  // leiser schnell (2 ms), lauter über den ganzen Block
+  const q = b < a ? Math.min(frames, Math.max(1, Math.round(rate * 0.002))) : frames;
+  for (let i = 0; i < frames; i++) {
+    const x = i < q ? a + (b - a) * (i + 1) / q : b;
+    f32[2 * i] *= x; f32[2 * i + 1] *= x;
+  }
+  this.g = g1; this.lim = l1;
+};
+
+/**
+ * Beobachtet (nur lesend), ob in einem SmartX-Kanal gerade Musik läuft: Schreibposition im Ringpuffer
+ * /dev/shm/smartx_<Kanal>_p_ringbuffer. Aufbau und Prüfung wie in alsa_play.py (class Ring).
+ */
+function MixProbe(channel) {
+  this.channel = channel;
+  this.path = path.join(process.env.ICONIX_SHM_DIR || '/dev/shm', 'smartx_' + channel + '_p_ringbuffer');
+  this.fd = null; this.off = 0; this.ino = 0; this.findAt = 0; this.err = null; this.info = null;
+  this.pos = null; this.movedAt = 0; this.buf = Buffer.alloc(48);
+}
+/** Kopf des Ringpuffers an Stelle o, oder null, wenn dort etwas nicht zusammenpasst. */
+MixProbe.head = function (b, o, size) {
+  const u = function (i) { return b.readUInt32LE(o + i * 4); };
+  const per = u(0), num = u(1), ch = u(2), r = u(4), w = u(5), fmt = u(6), ss = u(7), lvl = u(8);
+  if (!(per >= 16 && per <= 16384 && num >= 2 && num <= 256 && ch >= 1 && ch <= 32 && u(3) <= 64 && fmt >= 1 && fmt <= 3)) return null;
+  if (ss !== (fmt === 2 ? 2 : 4) || b[o + 36] !== 1 || b[o + 37] !== 1 || b[o + 38] > 1 || b[o + 39] > 1) return null;
+  const n = per * num;
+  if (r >= n || w >= n || lvl > n) return null;
+  const hi = b.readInt32LE(o + 44), base = o + 40 + hi * 4294967296 + b.readUInt32LE(o + 40);
+  if (!(base > 0 && base % 4 === 0 && base + n * ch * ss <= size)) return null;
+  return { per: per, num: num, ch: ch, fmt: ['', 'f32', 's16', 's32'][fmt], w: w, lvl: lvl };
+};
+MixProbe.prototype._close = function () { if (this.fd !== null) { try { fs.closeSync(this.fd); } catch (e) { /* egal */ } } this.fd = null; this.pos = null; this.info = null; };
+MixProbe.prototype._find = function () {
+  let fd = null;
+  try {
+    const st = fs.statSync(this.path);
+    if (this.fd !== null) { if (st.ino === this.ino) return; this._close(); }
+    if (st.size < 1024 || st.size > 1 << 24) { this.err = 'Größe ' + st.size; return; }
+    fd = fs.openSync(this.path, 'r');
+    const all = Buffer.alloc(st.size), n = fs.readSync(fd, all, 0, st.size, 0);
+    if (all.indexOf('_ringBufferReal') < 0) { this.err = 'Aufbau unbekannt (Name fehlt)'; fs.closeSync(fd); return; }
+    let hits = 0;
+    for (let o = 0; o + 48 <= n; o += 8) {
+      if (all[o + 36] !== 1 || all[o + 37] !== 1) continue;
+      const h = MixProbe.head(all, o, st.size);
+      if (h) { hits++; this.off = o; this.info = h; }
+    }
+    if (hits !== 1) { this.err = 'Aufbau unbekannt (' + hits + ' Treffer)'; this.info = null; fs.closeSync(fd); return; }
+    this.fd = fd; this.ino = st.ino; this.size = st.size; this.err = null; this.pos = null;
+  } catch (e) {
+    this.err = e.code || e.message;
+    if (fd !== null && this.fd !== fd) { try { fs.closeSync(fd); } catch (x) { /* egal */ } }
+    this._close();
+  }
+};
+MixProbe.prototype.poll = function (now) {
+  if (now - this.findAt >= MIX_FIND_MS) { this.findAt = now; this._find(); }
+  if (this.fd === null) return;
+  try {
+    if (fs.readSync(this.fd, this.buf, 0, 48, this.off) !== 48) return;
+    const w = this.buf.readUInt32LE(20);
+    if (this.pos !== null && w !== this.pos) this.movedAt = now;
+    this.pos = w;
+  } catch (e) { this.err = e.code || e.message; this._close(); }
+};
+MixProbe.prototype.state = function (now) {
+  const i = this.info;
+  return { alive: this.fd !== null && this.movedAt > 0 && now - this.movedAt < MIX_ALIVE_MS, err: this.err,
+    ring: i ? i.num + 'x' + i.per + ' ' + i.ch + 'ch ' + i.fmt : null };
+};
 
 /**
  * Abspielwege in Reihenfolge. opts.device: ALSA-Gerät für den Python-Player ('auto' = AUTO_DEVICES).
@@ -192,6 +295,10 @@ function candidates(opts) {
   if (isSmartx(opts.device) && !process.env.ICONIX_PLAYER) {
     if (!py || !fs.existsSync(ALSA_SCRIPT)) return out;
     const f = formatOf(opts.device);
+    if (isMix(opts.device)) {
+      if (RATE % MIX_RATE === 0) out.push({ name: opts.device, path: py, argv: [ALSA_SCRIPT, 'mix', opts.device.slice(4), String(MIX_RATE)], device: opts.device, fmt: f, smartx: true, pos: true });
+      return out;
+    }
     out.push({ name: 'alsa:' + opts.device, path: py, argv: [ALSA_SCRIPT, 'play', opts.device, String(f.rate), String(SMARTX_BUFFER_US), String(f.ch)],
       device: opts.device, fmt: f, smartx: true, pos: true });
     return out;
@@ -458,12 +565,44 @@ function Engine(opts) {
   this.fbFloor = FB_LEAD_MS; this.fbFloorAt = 0;
   this.f32 = new Float32Array(MAX_CHUNK * 2);
   this.timer = null;
+  this.outGain = new OutGain(); this.outDb = 0;
+  this.warm = null; this.warmLeft = 60;        // Synthese warmlaufen lassen, bevor der erste Ton gebraucht wird
+  this.probes = []; this.probeTimer = null; this.probeKey = '';
 }
+
+/** Musikströme beobachten (Namen der Kanäle; leer = keine). */
+Engine.prototype.setProbes = function (names) {
+  const self = this, list = Array.isArray(names) ? names.filter(function (n) { return /^[A-Za-z0-9_]{1,80}$/.test(n); }).slice(0, 4) : [];
+  if (list.join() === this.probes.map(function (p) { return p.channel; }).join()) return;
+  this.probes.forEach(function (p) { p._close(); });
+  if (this.probeTimer) { clearInterval(this.probeTimer); this.probeTimer = null; }
+  this.probes = list.map(function (n) { return new MixProbe(n); });
+  if (!list.length) return;
+  let next = 0;
+  this.probeTimer = setInterval(function () {
+    const now = clock.now();
+    if (now < next) return;
+    self.probes.forEach(function (p) { p.poll(now); });
+    // kein Kanal da: nur einmal je Sekunde nachsehen
+    next = self.probes.some(function (p) { return p.fd !== null; }) ? 0 : now + MIX_FIND_MS;
+    const key = JSON.stringify(self.mixState(now));
+    if (key !== self.probeKey) { self.probeKey = key; self._changed(); }
+  }, MIX_POLL_MS);
+  if (this.probeTimer.unref) this.probeTimer.unref();
+};
+Engine.prototype.mixState = function (now) {
+  if (!this.probes.length) return null;
+  const out = {};
+  this.probes.forEach(function (p) { out[p.channel] = p.state(now); });
+  return out;
+};
 
 Engine.prototype.configure = function (cfg) {
   this.synth.configure(cfg);
   // Testsound hat "Stumm" kurz aufgehoben, und jetzt schaltet jemand den Ton an: nach dem Test nicht wieder stumm
   if (this._testUnmuted && this.synth.cfg.enabled) this._testUnmuted = false;
+  if (cfg && 'outDb' in cfg) this.outDb = cfg.outDb;
+  if (cfg && 'mixProbe' in cfg) this.setProbes(cfg.mixProbe);
   if (cfg && cfg.device && cfg.device !== this.device && !this.devTest) this.setDevice(cfg.device);
   this._changed();
 };
@@ -575,6 +714,7 @@ Engine.prototype.status = function () {
     underruns: out.underruns || 0, xruns: out.xruns || 0, perMs: out.child ? out.perMs : null, late: this.late, gapMs: this.gapMs, bufMs: out.child ? out.bufMs || null : null, rt: out.child ? out.rt || null : null, ducked: !!this.synth.cfg.duck, leadMs: out.played != null && out.child ? (this.fbLead || FB_LEAD_MS) : LEAD_MS,
     players: out.list.map(function (b) { return b.name; }),
     device: this.device, resolved: out.opts.device, python: findPython(),
+    mix: this.mixState(clock.now()),
     wants: !!this.wantSound, outRate: out.fmt.rate, outCh: out.fmt.ch,
     scan: this.scan ? (this.scan.devices || []).map(function (d) { return { name: d.name, ok: d.ok && !isSilent(d), silent: isSilent(d), error: d.error }; }) : null,
     scanError: this.scan && this.scan.error,
@@ -600,7 +740,22 @@ Engine.prototype._loop = function () {
   this.timer = null;
   if (!this.running) return;
   this._tick();
+  if (this.warmLeft > 0 && !this.out.child) this._warm();
   this.timer = setTimeout(function () { self._loop(); }, this._busy() ? TICK_MS : IDLE_TICK_MS);
+};
+/**
+ * Warmlaufen: Die ersten Blöcke rechnet Node noch unübersetzt, auf dem Head Unit viel langsamer als später – der Ton
+ * stockte dadurch in der ersten Sekunde. Darum vorab in kleinen Stücken ins Leere rechnen (24 kHz wie im Auto).
+ */
+Engine.prototype._warm = function () {
+  if (!this.warm) this.warm = new Synth(RATE % MIX_RATE === 0 ? MIX_RATE : RATE);
+  for (let i = 0; i < 3 && this.warmLeft > 0; i++, this.warmLeft--) {
+    const t = (60 - this.warmLeft) * 0.15;
+    this.warm.configure(Object.assign({}, this.synth.cfg, { enabled: true, duck: false, hold: false }));
+    this.warm.setParams(sweepAt(t, this.synth.cfg)); this.warm.stale = false;
+    this.warm.render(this.f32, 240);
+  }
+  if (!this.warmLeft) this.warm = null;
 };
 /** Sofort einen Takt auslösen, wenn der Taktgeber gerade im langsamen Modus ist. */
 Engine.prototype.wake = function () {
@@ -611,6 +766,7 @@ Engine.prototype.wake = function () {
 
 Engine.prototype.stop = function () {
   this.running = false;
+  this.setProbes([]);
   if (this.timer) { clearTimeout(this.timer); this.timer = null; }
   this.out.stop();
 };
@@ -618,7 +774,8 @@ Engine.prototype.stop = function () {
 Engine.prototype._tick = function () {
   const now = clock.now(), synth = this.synth, out = this.out;
   // zählt Wakeups, die so spät kamen, dass der Vorlauf aufgebraucht war
-  if (out.child && this.ticking) this.gapMs = Math.max(this.gapMs, now - this.lastTick);
+  const gap = out.child && this.ticking ? now - this.lastTick : 0;
+  this.gapMs = Math.max(this.gapMs, gap);
   this.ticking = !!out.child;
   if (out.child && now - this.lastTick > (out.played != null ? (this.fbLead || FB_LEAD_START) : LEAD_MS)) this.late++;
   this.lastTick = now;
@@ -668,8 +825,17 @@ Engine.prototype._tick = function () {
     // Regelkreis: nur nachschreiben, was bis zum Ziel-Vorlauf fehlt (geschrieben − gespielt = was ansteht)
     // Vorlauf anpassen: Aussetzer -> mehr Reserve, lange keine -> wieder knapper
     if (this.fbLead == null) { this.fbLead = Math.max(FB_LEAD_MS, FB_LEAD_START); this.fbUnder = out.underruns || 0; this.fbCalm = now; }
-    if ((out.underruns || 0) > this.fbUnder) {
-      this.fbUnder = out.underruns; this.fbCalm = now;
+    // lange Pause zwischen zwei Takten: Reserve schaffen, bevor sie beim nächsten Mal zum Aussetzer wird
+    // (länger als der größte Vorlauf: ließe sich ohnehin nicht überbrücken)
+    if (gap <= FB_LEAD_MAX && gap + FB_GAP_MS > this.fbFloor && this.fbFloor < FB_LEAD_MAX) {
+      this.fbFloor = Math.min(FB_LEAD_MAX, gap + FB_GAP_MS); this.fbFloorAt = now;
+      if (this.fbLead < this.fbFloor) this.fbLead = this.fbFloor;
+    }
+    // beim Mischen hilft mehr Vorlauf nicht gegen einen zu späten Player (nur die Musik gibt dort den Takt vor)
+    const under = (out.underruns || 0) - (isMix(out.opts && out.opts.device) ? out.xruns || 0 : 0);
+    if (under < this.fbUnder) this.fbUnder = under;
+    if (under > this.fbUnder) {
+      this.fbUnder = under; this.fbCalm = now;
       this.fbFloor = Math.min(FB_LEAD_MAX, Math.max(this.fbFloor, this.fbLead + 20)); this.fbFloorAt = now;
       if (this.fbLead < FB_LEAD_MAX) { this.fbLead = Math.min(FB_LEAD_MAX, this.fbLead + 30); this.log('Aussetzer – Vorlauf jetzt ' + this.fbLead + ' ms'); }
     } else {
@@ -688,15 +854,18 @@ Engine.prototype._tick = function () {
   const direct = step > 1 && RATE % step === 0;
   if (direct && synth.sr !== RATE / step) this._rebuildSynth(RATE / step);
   else if (!direct && synth.sr !== RATE) this._rebuildSynth(RATE);
+  this.outGain.set(this.outDb, isMix(out.opts && out.opts.device) ? MIX_BASE : 1);
   while (due >= step && !out.blocked && out.child) {
     let n = Math.min(due, MAX_CHUNK);
     n -= n % step;
     if (direct) {
       const m = n / step;
       this.synth.render(this.f32, m);
+      this.outGain.run(this.f32, m, RATE / step);
       out.write(toPcmFmt(this.f32, m, { rate: RATE, ch: out.fmt.ch }));
     } else {
       this.synth.render(this.f32, n);
+      this.outGain.run(this.f32, n, RATE);
       out.write(toPcmFmt(this.f32, n, out.fmt, out.dec));
     }
     this.written += n; due -= n;
@@ -870,6 +1039,20 @@ function probeSmartx() {
   return r;
 }
 
+/** Ringpuffer aller SmartX-/AVB-Kanäle (alsa_play.py rings, nur lesend, ~1 s) – nur im Diagnose-Prozess aufrufen. */
+function rings() {
+  const py = findPython();
+  if (!py || !fs.existsSync(ALSA_SCRIPT)) return { rings: [], error: 'kein Python' };
+  const p = cp.spawnSync(py, [ALSA_SCRIPT, 'rings'], { timeout: 8000, maxBuffer: 1 << 20, encoding: 'utf8' });
+  try { return JSON.parse(String(p.stdout).trim().split('\n').pop()); } catch (e) { return { rings: [], error: String(p.stderr || (p.error && p.error.message) || 'keine Antwort').trim().slice(-120) }; }
+}
+function ringLine(r) {
+  const l = (r && r.rings) || [];
+  return 'Ringpuffer ' + (l.map(function (x) {
+    return (x.bar === 'avb' ? 'avb:' : '') + x.name + ' ' + (x.error ? x.error.replace(/, /g, ' ') : x.periods + 'x' + x.period + ' ' + x.ch + 'ch ' + x.fmt + (x.alive ? ' LÄUFT ' + x.min + '-' + x.max : ''));
+  }).join(', ') || 'keine' + (r && r.error ? ' (' + r.error + ')' : ''));
+}
+
 function smartxLines(r) {
   const out = [];
   const add = function (label, val) {
@@ -924,6 +1107,7 @@ module.exports = {
   probeAudio: probeAudio, diagLines: diagLines, scanAlsa: scanAlsa, findPython: findPython,
   probeSmartx: probeSmartx, smartxLines: smartxLines, usable: usable,
   Engine: Engine, Output: Output, candidates: candidates, toPcm: toPcm, toPcmFmt: toPcmFmt, Decimator: Decimator, sweepAt: sweepAt,
+  OutGain: OutGain, OUT_TOP: OUT_TOP, MIX_BASE: MIX_BASE, MixProbe: MixProbe, isMix: isMix, rings: rings, ringLine: ringLine,
   smartxEndpoints: smartxEndpoints, resolveSmartx: resolveSmartx, formatOf: formatOf, isSmartx: isSmartx,
   RATE: RATE, TICK_MS: TICK_MS, LEAD_MS: LEAD_MS, FB_LEAD_MS: FB_LEAD_MS, FB_LEAD_START: FB_LEAD_START, FB_LEAD_MAX: FB_LEAD_MAX, FB_FLOOR_MS: FB_FLOOR_MS, MAX_CHUNK: MAX_CHUNK
 };

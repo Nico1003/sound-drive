@@ -7,6 +7,8 @@ Das Head Unit hat libasound und Python 3.12 (mgu-python), aber kein aplay. Diese
   alsa_play.py play <gerät> <rate> [puffer_us] [kanäle]
                                      liest S16LE (Stereo oder Mono) von stdin und spielt es auf <gerät> ab
   alsa_play.py list [namen...]       gibt JSON aus: alle ALSA-PCM-Namen (+ zusätzliche) und ob sie sich öffnen lassen
+  alsa_play.py mix <Kanal> [rate]    mischt S16LE Stereo von stdin in den Musikstrom eines SmartX-Kanals (z. B. CarPlay)
+  alsa_play.py rings                 gibt JSON aus: die Ringpuffer der SmartX-/AVB-Kanäle
   alsa_play.py tone <gerät> [sek]    spielt einen Testton (440 Hz) – zum Ausprobieren von Hand
 
 Ausgaben auf stderr in Zeilen wie aplay (z. B. "underrun!!!"), damit engine.js sie zählt.
@@ -17,9 +19,21 @@ import ctypes
 import ctypes.util
 import json
 import math
+import mmap
+import operator
 import os
+import re
 import struct
 import sys
+import time
+import warnings
+
+try:
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        import audioop          # bis Python 3.12 dabei: rechnet Blöcke in C (spart etwa 4/5 der Rechenzeit beim Mischen)
+except ImportError:
+    audioop = None
 
 SND_PCM_STREAM_PLAYBACK = 0
 SND_PCM_NONBLOCK = 1
@@ -398,6 +412,447 @@ def cmd_play(dev, rate, latency_us=200000, channels=2):
     return 0
 
 
+class RingError(Exception):
+    pass
+
+
+class Ring:
+    """Ringpuffer eines SmartX-Kanals im gemeinsamen Speicher (/dev/shm/smartx_<Kanal>_p_ringbuffer).
+
+    Aufbau laut Intels Quelltext (intel/AVB-AudioModules, IasAudioRingBufferReal.hpp): neun 32-Bit-Werte – Periode,
+    Perioden, Kanäle, (0), Lese-, Schreibposition, Format, Bytes je Wert, Füllstand –, vier Schalter und ein Zeiger auf die
+    Daten (relativ zu sich selbst). Die Kanäle liegen hintereinander (nicht verschachtelt).
+    Wo der Kopf in der Datei liegt, steht nirgends fest; er wird gesucht und nur genommen, wenn ALLES zusammenpasst
+    (und nur eine Stelle passt). Sonst fasst dieses Programm den Speicher nicht an."""
+    HEAD = struct.Struct('<9I4Bq')
+    FORMATS = {1: ('f', 4), 2: ('h', 2), 3: ('i', 4)}
+
+    def __init__(self, path, write=False):
+        self.path = path
+        fd = os.open(path, os.O_RDWR if write else os.O_RDONLY)
+        try:
+            st = os.fstat(fd)
+            self.ino, self.size = st.st_ino, st.st_size
+            if self.size < 1024 or self.size > 1 << 24:
+                raise RingError('Größe %d' % self.size)
+            self.mm = mmap.mmap(fd, self.size, access=mmap.ACCESS_WRITE if write else mmap.ACCESS_READ)
+        finally:
+            os.close(fd)
+        hits = self._locate()
+        if len(hits) != 1:
+            raise RingError('Aufbau unbekannt (%d Treffer)' % len(hits))
+        self.off, h = hits[0]
+        self.period, self.periods, self.channels = h[0], h[1], h[2]
+        self.frames = self.period * self.periods
+        self.code, self.width = self.FORMATS[h[6]]
+        self.static = (h[0], h[1], h[2], h[6], h[7])
+        base = self.off + 40 + h[13]
+        self.planes = []
+        if write:
+            span = self.frames * self.width
+            mv = memoryview(self.mm)
+            self.planes = [mv[base + c * span:base + (c + 1) * span].cast(self.code) for c in range(min(2, self.channels))]
+
+    @classmethod
+    def check(cls, h, off, size):
+        per, num, ch, _max, r, w, fmt, ss, lvl, shared, init, rp, wp, rel = h
+        if not (16 <= per <= 16384 and 2 <= num <= 256 and 1 <= ch <= 32 and _max <= 64 and fmt in cls.FORMATS):
+            return False
+        if ss != cls.FORMATS[fmt][1] or shared != 1 or init != 1 or rp > 1 or wp > 1:
+            return False
+        n = per * num
+        if r >= n or w >= n or lvl > n:
+            return False
+        base = off + 40 + rel
+        return base > 0 and base % 4 == 0 and base + n * ch * ss <= size
+
+    def _locate(self):
+        data = self.mm[:]
+        if b'_ringBufferReal' not in data:
+            raise RingError('Name fehlt')
+        out = []
+        for off in range(0, self.size - self.HEAD.size, 8):
+            # schnell vorsortieren: die beiden Schalter "gemeinsam" und "fertig" stehen auf 1
+            if data[off + 36] != 1 or data[off + 37] != 1:
+                continue
+            h = self.HEAD.unpack_from(data, off)
+            if self.check(h, off, self.size):
+                out.append((off, h))
+        return out
+
+    def state(self):
+        """(lesen, schreiben, Füllstand) – oder RingError, wenn der Kopf nicht mehr stimmt (Kanal neu angelegt)."""
+        for _ in range(8):
+            h = self.HEAD.unpack_from(self.mm, self.off)
+            if (h[0], h[1], h[2], h[6], h[7]) != self.static or h[4] >= self.frames or h[5] >= self.frames or h[8] > self.frames:
+                raise RingError('Kopf geändert')
+            # mitten in einer Änderung gelesen (Position schon neu, Füllstand noch alt)? noch einmal
+            if (h[5] - h[4] - h[8]) % self.frames == 0:
+                break
+        return h[4], h[5], h[8]
+
+    def replaced(self):
+        try:
+            return os.stat(self.path).st_ino != self.ino
+        except OSError:
+            return True
+
+    def close(self):
+        for p in self.planes:
+            p.release()
+        self.planes = []
+        try:
+            self.mm.close()
+        except BufferError:
+            pass
+
+
+class Mixer:
+    """Addiert den Motorsound auf die Musik im Ringpuffer. Reicht der Platz nach oben nicht, gibt zuerst die Musik etwas
+    nach (höchstens auf DUCK_MIN), dann wird die Summe leiser geregelt – nichts wird abgeschnitten (das klänge wie Kratzen).
+    Alle Regler sind Verläufe über den Block und gelten für beide Seiten gleich."""
+    GAIN, TOP, DUCK_MIN, PARTS = 1.0, 30500.0, 0.75, 8
+
+    def __init__(self, ring):
+        self.ring = ring
+        self.duck, self.lim = 1.0, 1.0
+        self.fast = audioop is not None and ring.code in 'hi'
+
+    def _read(self, p, pos, n):
+        a = min(n, self.ring.frames - pos)
+        d = p[pos:pos + a].tobytes()
+        return d + p[0:n - a].tobytes() if a < n else d
+
+    def _write(self, p, pos, n, data):
+        a = min(n, self.ring.frames - pos)
+        src = memoryview(data).cast('B').cast(self.ring.code)
+        p[pos:pos + a] = src[:a]
+        if a < n:
+            p[0:n - a] = src[a:]
+
+    def _ramp(self, g0, g1):
+        """Verläufe je Teilstück: nach unten in den ersten beiden, nach oben über den ganzen Block."""
+        k = self.PARTS
+        if g1 < g0:
+            return [(g0 + g1) * 0.5] + [g1] * (k - 1)
+        return [g0 + (g1 - g0) * (i + 1) / k for i in range(k)]
+
+    def _next(self, old, want, n, low):
+        # zurück in ~0,4 s
+        return want if want < old else min(want, old + (1.0 - low) * n / 19200.0)
+
+    def add(self, pos, stereo):
+        """stereo: Motorsound ab Frame pos des Ringpuffers (S16LE Stereo, 48 kHz)."""
+        n = len(stereo) // 4
+        if not n:
+            return
+        (self._add_fast if self.fast else self._add_slow)(pos, n, stereo)
+
+    def _add_fast(self, pos, n, stereo):
+        planes, w = self.ring.planes, self.ring.width
+        if len(planes) > 1:
+            eng = [audioop.tomono(stereo, 2, 1, 0), audioop.tomono(stereo, 2, 0, 1)]
+        else:
+            eng = [audioop.tomono(stereo, 2, 0.5, 0.5)]
+        pe = max(audioop.max(e, 2) for e in eng)
+        calm = self.duck == 1.0 and self.lim == 1.0
+        if pe == 0 and calm:
+            return
+        music = [self._read(p, pos, n) for p in planes]
+        scale = 1.0 if w == 2 else 1.0 / 65536.0
+        pm = max(audioop.max(m, w) for m in music) * scale
+        if calm and pm + pe <= self.TOP:
+            for p, m, e in zip(planes, music, eng):
+                self._write(p, pos, n, audioop.add(m, e if w == 2 else audioop.lin2lin(e, 2, 4), w))
+            return
+        want = 1.0 if pm + pe <= self.TOP or pm <= 0 else max(self.DUCK_MIN, min(1.0, (self.TOP - pe) / pm))
+        d0, d1 = self.duck, self._next(self.duck, want, n, self.DUCK_MIN)
+        k = max(1, n // self.PARTS)
+        cuts = [(i * k, n if i == self.PARTS - 1 else min(n, (i + 1) * k)) for i in range(self.PARTS)]
+        dg = self._ramp(d0, d1)
+        half = []
+        for m, e in zip(music, eng):
+            m4 = m if w == 4 else audioop.lin2lin(m, 2, 4)
+            e4 = audioop.mul(audioop.lin2lin(e, 2, 4), 4, 0.5)
+            m4 = b''.join(audioop.mul(m4[a * 4:b * 4], 4, 0.5 * g) for (a, b), g in zip(cuts, dg))
+            half.append(audioop.add(m4, e4, 4))          # halbe Höhe: kann nicht überlaufen
+        peak = max(audioop.max(x, 4) for x in half) / 32768.0
+        l0, l1 = self.lim, self._next(self.lim, min(1.0, self.TOP / peak) if peak > 0 else 1.0, n, 0.5)
+        lg = self._ramp(l0, l1)
+        for p, x in zip(planes, half):
+            out = b''.join(audioop.mul(x[a * 4:b * 4], 4, 2.0 * g) for (a, b), g in zip(cuts, lg))
+            self._write(p, pos, n, out if w == 4 else audioop.lin2lin(out, 4, 2))
+        self.duck, self.lim = d1, l1
+
+    def _add_slow(self, pos, n, stereo):
+        ring, code = self.ring, self.ring.code
+        planes = ring.planes
+        a = array.array('h', stereo)
+        eng = [a[0::2], a[1::2]] if len(planes) > 1 else [[(x + y) * 0.5 for x, y in zip(a[0::2], a[1::2])]]
+        pe = max(max(max(e), -min(e)) for e in eng)
+        if pe <= 0 and self.duck == 1.0 and self.lim == 1.0:
+            return
+        unit = {'h': 1.0, 'i': 1.0 / 65536.0, 'f': 32768.0}[code]
+        music = []
+        for p in planes:
+            m = array.array(code, self._read(p, pos, n))
+            music.append(m if unit == 1.0 else [v * unit for v in m])
+        pm = max(max(max(m), -min(m)) for m in music)
+        want = 1.0 if pm + pe <= self.TOP or pm <= 0 else max(self.DUCK_MIN, min(1.0, (self.TOP - pe) / pm))
+        d0, d1 = self.duck, self._next(self.duck, want, n, self.DUCK_MIN)
+        st = (d1 - d0) / n
+        sums = []
+        for m, e in zip(music, eng):
+            if d0 == 1.0 and d1 == 1.0:
+                sums.append(list(map(operator.add, m, e)))
+            else:
+                sums.append([v * (d0 + st * i) + x for i, (v, x) in enumerate(zip(m, e), 1)])
+        peak = max(max(max(x), -min(x)) for x in sums)
+        l0, l1 = self.lim, self._next(self.lim, min(1.0, self.TOP / peak) if peak > 0 else 1.0, n, 0.5)
+        if l0 != 1.0 or l1 != 1.0:
+            q = min(n, 64) if l1 < l0 else n
+            st = (l1 - l0) / q
+            sums = [[v * (l0 + st * i if i < q else l1) for i, v in enumerate(x, 1)] for x in sums]
+        for p, x in zip(planes, sums):
+            x = [32767.0 if v > 32767.0 else (-32767.0 if v < -32767.0 else v) for v in x]
+            if code == 'h':
+                out = array.array('h', map(int, x))
+            elif code == 'i':
+                out = array.array('i', [int(v * 65536.0) for v in x])
+            else:
+                out = array.array('f', [v / 32768.0 for v in x])
+            self._write(p, pos, n, out)
+        self.duck, self.lim = d1, l1
+
+
+class Upsample:
+    """24 -> 48 kHz, S16LE Stereo: in C (audioop.ratecv), ohne audioop Zwischenwerte mit vier Punkten (-1, 9, 9, -1)/16."""
+
+    def __init__(self, gain):
+        self.gain, self.state, self.hist = gain, None, [[0.0] * 3, [0.0] * 3]
+
+    def run(self, data):
+        if audioop is not None:
+            out, self.state = audioop.ratecv(data, 2, 2, 24000, 48000, self.state)
+            return audioop.mul(out, 2, self.gain)
+        a = array.array('h', data)
+        out = array.array('h', bytes(len(a) * 4))
+        for c in (0, 1):
+            h = self.hist[c] + [v * self.gain for v in a[c::2]]
+            self.hist[c] = h[-3:]
+            out[c::4] = array.array('h', map(int, h[1:-2]))
+            out[c + 2::4] = array.array('h', [int(max(-32767.0, min(32767.0, (9.0 * (p + q) - o - r) * 0.0625)))
+                                              for o, p, q, r in zip(h, h[1:], h[2:], h[3:])])
+        return out.tobytes()
+
+
+def cmd_mix(channel, rate=24000):
+    """Motorsound (S16LE Stereo, rate Hz, von stdin) in den Musikstrom eines SmartX-Kanals (48 kHz) mischen.
+
+    Dieses Programm öffnet den Kanal nicht: Der Besitzer (CarPlay) schreibt weiter seine Musik. Jede Musik, die neu
+    im Puffer steht, bekommt hier den Motorsound dazu, bevor SmartX sie liest (10 bis 20 ms später). Es braucht keine
+    Verbindung im Audiomanager – der Knopf bleibt bei der Musik, nichts wird abgesenkt oder unterbrochen."""
+    path = os.path.join(os.environ.get('ICONIX_SHM_DIR', '/dev/shm'), 'smartx_%s_p_ringbuffer' % channel)
+    if rate != 24000:
+        sys.stderr.write('alsa_play: mix: Rate %d\n' % rate)
+        return 2
+    try:
+        ring = Ring(path, write=True)
+    except (OSError, RingError, ValueError) as e:
+        sys.stderr.write('alsa_play: Musikstrom %s: %s\n' % (channel, e))
+        sys.stderr.flush()
+        return 2
+    rt = realtime()
+    rp = realtime_parent()
+    if rp is not None:
+        rt += ', Dienst ' + rp
+    sys.stderr.write('alsa_play: mischt in %s (%d x %d Frames, %d Kanäle, Format %s), Puffer %d ms, Periode %d ms, Echtzeit %s\n' % (
+        channel, ring.periods, ring.period, ring.channels, ring.code, ring.frames // 48, ring.period // 48, rt))
+    sys.stderr.flush()
+    fd = sys.stdin.fileno()
+    os.set_blocking(fd, False)
+    # Datenstrom vom Dienst (24 kHz): queue ab qpos; done = davon verbrauchte Frames
+    queue, qpos, done, eof = bytearray(), 0, 0, False
+    mixer, conceal = Mixer(ring), Conceal(rate, 2)
+    up = Upsample(mixer.GAIN)
+    ready = bytearray()             # schon mit 48 kHz, noch nicht gemischt (höchstens ein paar Frames)
+    wlast, moved, live = None, 0.0, False
+    idle_at, replaced_at, reported = time.monotonic(), 0.0, -1
+    fills, stalled, lates, closing = 0, False, 0, 0.0
+
+    def have():
+        return (len(queue) - qpos) // 4
+
+    def drop(n):
+        nonlocal qpos, done
+        qpos += n * 4
+        done += n
+        if qpos > 65536:
+            del queue[:qpos]
+            qpos = 0
+
+    def take(k):
+        """k Frames des Dienstes; fehlen welche, weich überbrücken (Conceal) statt Stille mitten im Ton."""
+        nonlocal fills, stalled
+        n = min(k, have())
+        data = bytes(queue[qpos:qpos + n * 4])
+        drop(n)
+        if n:
+            data = conceal.join(data)
+            conceal.remember(data)
+            stalled = False
+        if n < k:
+            conceal.start()
+            data += conceal.fill(k - n).tobytes()
+            if not stalled and not eof and conceal.audible():
+                fills += 1
+                sys.stderr.write('underrun!!! (Stille nachgelegt, #%d)\n' % fills)
+                sys.stderr.flush()
+            stalled = True
+        return data
+
+    def frames48(n):
+        """n Frames mit 48 kHz (S16LE Stereo)."""
+        while len(ready) < n * 4:
+            ready.extend(up.run(take((n * 4 - len(ready) + 7) // 8)))
+        out = bytes(ready[:n * 4])
+        del ready[:n * 4]
+        return out
+
+    first = False
+    # SmartX liest eine Periode (auch eine größere als die des Kanals) am Stück und rückt die Leseposition erst danach weiter
+    guard = min(max(ring.period, 512), ring.frames // 2)
+    poll = min(0.004, ring.period / 48000.0 / 2.0)
+    try:
+        while True:
+            # 1) was der Dienst geschickt hat
+            while not eof:
+                try:
+                    d = os.read(fd, 65536)
+                except BlockingIOError:
+                    break
+                if not d:
+                    eof = True
+                    break
+                queue += d
+            now = time.monotonic()
+            if eof:
+                # zu Ende: den Rest noch spielen und weich ausblenden, dann aufhören
+                if not closing:
+                    closing = now + 1.0
+                if not live or now > closing or (not have() and conceal.active and conceal.pos >= conceal.fade):
+                    break
+            # 2) neue Musik im Puffer?
+            try:
+                r, w, lvl = ring.state()
+                if now - replaced_at > 0.5:
+                    replaced_at = now
+                    if ring.replaced():
+                        raise RingError('Kanal neu angelegt')
+            except RingError as e:
+                sys.stderr.write('alsa_play: Musikstrom: %s\n' % e)
+                sys.stderr.flush()
+                return 3
+            if wlast is None:
+                wlast = w
+            new = (w - wlast) % ring.frames
+            if new:
+                if not live:
+                    live = True
+                    # alter Ton von vor der Pause: verwerfen, mit dem neuesten weitermachen und einblenden
+                    drop(max(0, have() - rate // 20 - ring.frames // 2))
+                    del ready[:]
+                    conceal.start()
+                    conceal.pos = conceal.fade
+                    stalled, first = True, True
+                moved, start = now, wlast
+                wlast = w
+                valid = min(new, lvl)                    # nur was noch ungelesen ist (nach einem Zurücksetzen auch weniger)
+                safe = max(0, lvl - guard)               # die vordersten Frames liest SmartX vielleicht gerade
+                use = min(valid, safe)
+                lost = new - use
+                if lost:
+                    # zu spät dran: dieser Teil der Musik ist schon durch; den Motorsound dafür überspringen
+                    if not first and valid == new:
+                        frames48(lost)
+                        # danach weich einblenden
+                        conceal.start()
+                        conceal.pos = conceal.fade
+                    if not first and conceal.audible():
+                        lates += 1
+                        if lates <= 5 or lates % 50 == 0:
+                            sys.stderr.write('underrun!!! (Musik schon gelesen, #%d)\n' % lates)
+                            sys.stderr.flush()
+                    start = (w - use) % ring.frames
+                if use:
+                    mixer.add(start, frames48(use))
+                    first = False
+                idle_at = now
+            elif live and now - moved > 0.3:
+                live = False
+                idle_at = now
+            # 3) Musik steht: den Ton des Dienstes in Echtzeit verwerfen, damit er weiterläuft und beim nächsten Stück frisch ist
+            if not live:
+                n = min(have(), int((now - idle_at) * rate))
+                if n > 0:
+                    drop(n)
+                    idle_at += n / float(rate)
+                if now - idle_at > 0.5:
+                    idle_at = now - 0.5
+                conceal.tail = array.array('h')
+            # 4) Rückmeldung: verbraucht, abzüglich was im Ringpuffer noch vor dem Lautsprecher steht (höchstens 20 ms: in
+            #    einem großen Puffer bliebe dem Dienst sonst kein Vorlauf mehr)
+            p = max(0, done - (min(lvl, 960) // 2 if live else 0))
+            if p != reported:
+                reported = p
+                try:
+                    os.write(1, ('P %d\n' % p).encode())
+                except OSError:
+                    break
+            time.sleep(poll)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if rp == 'ja':
+            try:
+                os.sched_setscheduler(os.getppid(), os.SCHED_OTHER, os.sched_param(0))
+            except Exception:
+                pass
+        ring.close()
+    return 0
+
+
+def cmd_rings():
+    """Alle SmartX-/AVB-Ringpuffer: Aufbau und ob sich gerade etwas bewegt (nur lesen; für die Audio-Diagnose)."""
+    d = os.environ.get('ICONIX_SHM_DIR', '/dev/shm')
+    out, open_ = [], []
+    for n in sorted(os.listdir(d)):
+        m = re.match(r'(smartx|avb)_(.+)_p_ringbuffer$', n)
+        if not m:
+            continue
+        try:
+            open_.append((m.group(1), m.group(2), Ring(os.path.join(d, n))))
+        except Exception as e:
+            out.append({'bar': m.group(1), 'name': m.group(2), 'error': str(e)[:80]})
+    seen = dict((i, [set(), []]) for i in range(len(open_)))
+    end = time.monotonic() + 0.6
+    while time.monotonic() < end:
+        for i, (_b, _n, r) in enumerate(open_):
+            try:
+                a, b, lvl = r.state()
+                seen[i][0].add(b)
+                seen[i][1].append(lvl)
+            except RingError:
+                pass
+        time.sleep(0.004)
+    for i, (b, n, r) in enumerate(open_):
+        lv = seen[i][1] or [0]
+        out.append({'bar': b, 'name': n, 'period': r.period, 'periods': r.periods, 'ch': r.channels, 'fmt': r.code,
+                    'alive': len(seen[i][0]) > 1, 'min': min(lv), 'max': max(lv), 'off': r.off, 'size': r.size})
+        r.close()
+    print(json.dumps({'rings': out}))
+
+
 def cmd_tone(dev, seconds=2.0):
     lib = load_alsa()
     rate = 44100
@@ -429,6 +884,10 @@ if __name__ == '__main__':
             cmd_list(a[1:])
         elif len(a) >= 3 and a[0] == 'play':
             sys.exit(cmd_play(a[1], int(a[2]), int(a[3]) if len(a) > 3 else 200000, int(a[4]) if len(a) > 4 else 2))
+        elif len(a) >= 2 and a[0] == 'mix':
+            sys.exit(cmd_mix(a[1], int(a[2]) if len(a) > 2 else 24000))
+        elif a and a[0] == 'rings':
+            cmd_rings()
         elif len(a) >= 2 and a[0] == 'tone':
             sys.exit(cmd_tone(a[1], float(a[2]) if len(a) > 2 else 2.0))
         else:
@@ -437,6 +896,8 @@ if __name__ == '__main__':
     except OSError as e:
         if a and a[0] == 'list':
             print(json.dumps({'devices': [], 'error': str(e)}))
+        elif a and a[0] == 'rings':
+            print(json.dumps({'rings': [], 'error': str(e)}))
         else:
             sys.stderr.write('alsa_play: %s\n' % e)
         sys.exit(4)
