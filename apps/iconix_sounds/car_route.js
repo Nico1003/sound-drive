@@ -68,7 +68,9 @@ const DUCK_POLL_MS = 1500;
 // wieder der Musik; nach KNOB_REST_MS ohne Drehen kommt der Sound zurück.
 // Die Lautstärke selbst setzt die App nie (setVolume, setConnectionVolumeStep): Im Auto ließ sich danach die Musik
 // nicht mehr lauter drehen (loenne007/idrive-enginesound 1.2.5/1.2.6).
-const KNOB_POLL_MS = 100, KNOB_REST_MS = 900;
+// KNOB_REST_MS lang genug für mehrere Drehs nacheinander: Käme der Sound dazwischen zurück, senkte das Auto das Radio wieder
+// ab, der Knopf läge beim Motorsound und die Lautstärke spränge hin und her.
+const KNOB_POLL_MS = 100, KNOB_REST_MS = 2200;
 const KNOB_IDLE_MS = 200;      // so oft fragen, wenn gerade nicht gedreht wird (sonst bei jedem KNOB_POLL_MS)
 // Größere Sprünge zwischen zwei Abfragen macht das Auto (Ansage: 34 -> 23, danach zurück), keine Hand am Knopf
 const KNOB_STEP_MAX = 7;
@@ -154,6 +156,7 @@ class CarRoute {
     this.lost = 0;              // so oft ging die Verbindung verloren, ohne je hörbar gewesen zu sein
     this._loadCurve();
     this.auto = false; this.pickId = DEFAULT_ROUTE; this.goodId = null; this.goodAt = 0; this.badAt = 0; this.mixBlock = 0;
+    this.radioOn = true; this.startAt = Clock.now();   // Einstellung "Motorsound bei Radio ..."
     this.music = null; this.musicAt = 0;     // Musikquelle am vorderen Lautsprecherweg (Nummer) und wann gelesen
     this.onChange = null;       // fn(): hörbar/gehalten hat sich geändert (die App schaltet den Ton weich)
     this.lastAudible = null;
@@ -236,6 +239,17 @@ class CarRoute {
     // beim Trennen nicht aufgeben: bis zu drei Versuche (die Plattform lässt ~200 ms)
     const again = (n) => (n > 0 && this.orphans.length && this.am ? this._sweep().catch(() => again(n - 1)) : Promise.resolve());
     return this.conn && this.am ? this._disconnect().catch(() => {}).then(() => again(3)) : again(3);
+  }
+
+  /** Motorsound bei Radio, Bluetooth und USB an/aus (Einstellung): deren Ton kommt nicht durch CarPlays Kanal, es geht nur der Overlay-Weg. */
+  setRadio(on) { this.radioOn = !!on; }
+
+  /** Spielt gerade Musik, bei der der Motorsound laut Einstellung aus bleibt? Nur im Automatik-Betrieb. */
+  skipped() {
+    if (this.radioOn || !this.auto || !this.needsAm() || !this.mixSeen) return false;
+    const now = Clock.now();
+    if (!this.musicAt) return now - this.startAt < 5000;           // gerade gestartet: erst nachsehen
+    return now - this.musicAt < MUSIC_OLD_MS && this.music != null && this._musicPlays();
   }
 
   /** Lautstärkeknopf der Musik überlassen an/aus (Einstellung). */
@@ -498,7 +512,7 @@ class CarRoute {
   /** Zustand für die Diagnose (diagnose.js). */
   info() {
     const r = CarRoute.route(this.routeId);
-    return { label: r.label, state: this.state, conn: this.connState, needsAm: this.needsAm(), error: this.lastError, mixing: !!r.channel, held: this.knobHeld(),
+    return { label: r.label, state: this.state, conn: this.connState, needsAm: this.needsAm(), error: this.lastError, mixing: !!r.channel, held: this.knobHeld(), skipped: this.wanted && this.skipped(),
       vol: this.compVol, compStep: this.compStep, compDb: this.compDb(), compMax: COMP_MAX_DB, points: Object.keys(this.curve).length };
   }
 
@@ -602,12 +616,15 @@ class CarRoute {
       this.sweepAt = now; this.busy = true;
       try { if (await this._proxies()) await this._sweep(); } catch (e) { /* nächstes Mal */ } finally { this.busy = false; }
     }
-    const target = this.wanted && this.needsAm() && !this.knobHeld() ? this.routeId : null;
+    const skip = this.skipped();
+    const target = this.wanted && this.needsAm() && !this.knobHeld() && !skip ? this.routeId : null;
+    const rest = () => (this.knobHeld() ? 'Pause (Lautstärkeknopf)' : skip && this.wanted ? 'aus bei Radio' : null);
     const r = target ? ROUTES[target] : null;
     // nichts zu tun?
     if (!target && !this.conn) {
       if (!this.wanted) this.lastError = null;
-      this.state = this.knobHeld() ? 'Pause (Lautstärkeknopf)' : this.lastError ? 'Fehler' : 'aus';
+      if (skip) this.lastError = null;
+      this.state = rest() || (this.lastError ? 'Fehler' : 'aus');
       return;
     }
     if (target && this.conn && this.conn.routeId === target && now - this.lastVerify < (this.connState === 'CS_CONNECTED' ? VERIFY_MS : CHECK_MS - 100)) return;
@@ -618,7 +635,7 @@ class CarRoute {
       if (!this.cleanupDone) await this._cleanup();
       // falscher Weg oder nicht mehr gewünscht -> trennen
       if (this.conn && (!target || this.conn.routeId !== target)) await this._disconnect();
-      if (!target) { this.state = this.knobHeld() ? 'Pause (Lautstärkeknopf)' : 'aus'; return; }
+      if (!target) { this.state = rest() || 'aus'; return; }
       if (this.conn) await this._verify();
       else await this._connect(target, r);
     } catch (e) {

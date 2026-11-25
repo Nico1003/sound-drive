@@ -36,6 +36,7 @@ function way(s) {
   const r = s.route, c = { state: 'ok', title: 'Tonweg', value: '', hint: '' };
   if (r.mixing) c.value = r.label + ' (ohne Pause)';
   else if (r.held) { c.value = 'macht gerade der Musik Platz'; c.state = 'wait'; }
+  else if (r.skipped) { c.value = 'aus bei Radio, Bluetooth, USB'; c.hint = 'so eingestellt (Einstellungen)'; }
   else if (!r.needsAm) c.value = r.label;
   else if (r.state === 'verbunden' && (!r.conn || r.conn === 'CS_CONNECTED')) c.value = r.label + ': verbunden';
   else if (r.state === 'verbunden' || r.state === 'verbinde') { c.state = 'wait'; c.value = r.label + ': wird verbunden'; }
@@ -89,6 +90,7 @@ function build(s) {
   const wait = cards.filter((c) => c.state === 'wait')[0];
   if (bad) return { state: 'bad', text: bad.title + ': ' + (bad.hint || bad.value), cards };
   if (wait) return { state: 'wait', text: wait.title + ': ' + wait.value, cards };
+  if (s.route.skipped) return { state: 'ok', text: 'Alles in Ordnung – kein Motorsound bei Radio, Bluetooth und USB (so eingestellt).', cards };
   return { state: 'ok', text: s.ds && s.ds.playing && s.rpm > 100 ? 'Alles in Ordnung – der Motorsound läuft.' : 'Alles in Ordnung – der Sound kommt mit dem Motor.', cards };
 }
 

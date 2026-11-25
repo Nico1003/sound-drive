@@ -2,14 +2,14 @@
   "id": "iconix_sounds",
   "title": "Sound Drive",
   "description": "Virtueller Motorsound abhängig von Drehzahl und Last: Power Four, Supra, Flat Four, Flat Six, Rally Five, Muscle V8, Track V10 und Grand V12. Ton über die Fahrzeuglautsprecher (Audiomanager + SmartX), startet mit dem Auto. Braucht das Tool Sound Drive Audio.",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "vendor": "custom",
   "loggingId": "ICXS",
   "iconGlyph": "engine",
   "mguHmi": ["ID7", "ID8"],
   "autostart": true,
   "requires": {
-    "iconix-audiod": "1.1.0"
+    "iconix-audiod": "1.1.1"
   },
   "signals": {
     "de.bmw.infotainment.vehicle.CDS": {
@@ -86,7 +86,7 @@
         ["supra", "Supra (Reihensechser)"],
         ["boxer", "Flat Four (Boxer)"],
         ["boxer6", "Flat Six (Boxer)"],
-        ["turbo5", "Rally Five (Fuenfzylinder)"],
+        ["turbo5", "Rally Five (Fünfzylinder)"],
         ["v8", "Muscle V8"],
         ["v10", "Track V10"],
         ["v12", "Grand V12"]
@@ -94,7 +94,7 @@
     },
     {
       "key": "volume",
-      "label": "Lautstaerke",
+      "label": "Lautstärke",
       "type": "choice",
       "default": 80,
       "options": [
@@ -123,13 +123,13 @@
     },
     {
       "key": "intensity",
-      "label": "Auspraegung",
+      "label": "Ausprägung",
       "type": "choice",
       "default": 70,
       "options": [
         [30, "Dezent"],
         [50, "Mittel"],
-        [70, "Kraeftig"],
+        [70, "Kräftig"],
         [90, "Stark"],
         [100, "Maximal"]
       ]
@@ -154,32 +154,38 @@
     },
     {
       "key": "knobComp",
-      "label": "Motorsound unabhaengig vom Lautstaerkeknopf",
+      "label": "Motorsound unabhängig vom Lautstärkeknopf",
       "type": "choice",
       "default": 1,
       "options": [
         [0, "Aus (folgt dem Knopf)"],
         [0.6, "Schwach (0,6 dB je Stufe)"],
-        [0.8, "Etwas schwaecher (0,8 dB)"],
+        [0.8, "Etwas schwächer (0,8 dB)"],
         [1, "Normal (1 dB je Stufe)"],
-        [1.3, "Etwas staerker (1,3 dB)"],
+        [1.3, "Etwas stärker (1,3 dB)"],
         [1.6, "Stark (1,6 dB je Stufe)"]
       ]
     },
     {
       "key": "knobCal",
-      "label": "Lautstaerke abgleichen (im Stand, Musik an)",
+      "label": "Lautstärke abgleichen (im Stand, Musik an)",
       "type": "choice",
       "default": "off",
       "options": [
         ["off", "Aus"],
         ["on", "An (mit +/- auf der Sound-Seite)"],
-        ["reset", "Abgleich zuruecksetzen"]
+        ["reset", "Abgleich zurücksetzen"]
       ]
     },
     {
       "key": "knobMusic",
-      "label": "Lautstaerkeknopf regelt die Musik (Overlay-Mix)",
+      "label": "Lautstärkeknopf regelt die Musik (Overlay-Mix)",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "radio",
+      "label": "Motorsound bei Radio, Bluetooth und USB",
       "type": "bool",
       "default": true
     },
@@ -209,7 +215,7 @@
     },
     {
       "key": "bassDb",
-      "label": "Bass (Droehnen)",
+      "label": "Bass (Dröhnen)",
       "type": "choice",
       "default": 0,
       "group": "Klang anpassen",
@@ -239,13 +245,13 @@
     },
     {
       "key": "bmwVolume",
-      "label": "BMW-Lautstaerkeanzeige beim Drehen zeigen",
+      "label": "BMW-Lautstärkeanzeige beim Drehen zeigen",
       "type": "bool",
       "default": true
     },
     {
       "key": "narrow",
-      "label": "Schmale Ansicht (Platz fuer das Seitenfenster)",
+      "label": "Schmale Ansicht (Platz für das Seitenfenster)",
       "type": "bool",
       "default": false
     },

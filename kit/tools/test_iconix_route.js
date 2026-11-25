@@ -552,6 +552,41 @@ const DIAG_OK = { details: false, lines: [], model: diagOf() };
 const DIAG_BAD = { details: false, lines: [], model: diagOf({ connected: false, ds: null, why: 'Dienst läuft, antwortet aber nicht (ECONNREFUSED)', rpm: null, marks: [] },
   { mixing: false, needsAm: true, state: 'Fehler', error: 'connect 1048->1024 abgelehnt: E_NOT_POSSIBLE und noch sehr viel mehr Text dahinter' }) };
 
+test('Umlaute: jede Schrift der Oberfläche hat alle Zeichen der App, die alten Atlanten bleiben unverändert', () => {
+  const fonts = require(path.join(ROOT, 'kit/runtime/fonts.js')), { Recorder, atlasById } = require(path.join(ROOT, 'kit/runtime/record.js'));
+  let text = fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/app.json'), 'utf8');
+  ['ui', 'main', 'diagnose', 'car_route', 'audio_link', 'profiles'].forEach((n) => { text += fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds', n + '.js'), 'utf8'); });
+  const chars = Array.from(new Set(text)).filter((c) => c > '~');
+  ['label', 'bold', 'light'].forEach((fam) => [15, 20, 24, 32, 40, 60].forEach((size) => {
+    const f = fonts.get(fam, size, 'ä');
+    chars.forEach((c) => assert.ok(f.glyphs[c.codePointAt(0)], fam + ' ' + size + ' ohne ' + c));
+    const a = fonts.piece(f, 97), b = fonts.piece(f, 228);
+    assert.ok(a !== b && a.y0 === 0 && !a.cacheKey && a.atlasH + b.atlasH === f.atlasH && b.alpha.some((v) => v > 100));
+  }));
+  const r = new Recorder(400, 100, { textScale: 1.164 });
+  r.text('Lautstärke größer', 10, 50, 24, '#ffffff', { font: 'light', literal: true });
+  assert.strictEqual(r.atlases.size, 2); r.atlases.forEach((id) => assert.ok(atlasById(id).alpha.length === 1024 * atlasById(id).atlasH));
+  const spec = fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/app.json'), 'utf8');
+  assert.ok(!/aerke|oehn|aeg|ueck|abhaeng|fuer /.test(spec), 'umschriebene Umlaute');
+});
+
+test('Radio: Einstellung "kein Motorsound bei Radio" verbindet nicht, CarPlay und Stille schon', async () => {
+  const { am, signals } = fakeAm();
+  const r = new CarRoute(signals, quiet, null);
+  const realNow = setClock(null); let t = realNow(); setClock(() => t);
+  r.startAt = t;
+  const run = async (ms) => { for (let i = 0; i < ms / 500; i++) { t += 500; r.want(r.pick('auto', {}, null), true); await r._step(); await new Promise((ok) => setImmediate(ok)); await new Promise((ok) => setImmediate(ok)); } };
+  const own = () => am.conns.filter((c) => c.sourceID === 1048).length;
+  try {
+    am.conns.push({ mainConnectionID: 7, sourceID: 1, sinkID: 1024, connectionState: 2 });
+    r.setRadio(false); await run(4000);
+    assert.ok(own() === 0 && r.state === 'aus bei Radio' && !r.audible() && !am.calls.some((c) => /^connect/.test(c)), r.state);
+    r.setRadio(true); await run(2000); assert.strictEqual(own(), 1, 'an: Overlay');
+    r.setRadio(false); await run(2000); assert.strictEqual(own(), 0, 'wieder aus: getrennt');
+    am.conns = []; await run(3000); assert.strictEqual(own(), 1, 'Radio aus: Motorsound kommt');
+  } finally { setClock(realNow); }
+});
+
 test('Diagnose: klare Worte, Ampel und nächster Schritt', () => {
   const card = (m, t) => m.cards.find((c) => c.title === t);
   const ok = diagOf();
@@ -575,6 +610,7 @@ test('Diagnose: klare Worte, Ampel und nächster Schritt', () => {
   assert.ok(/Automatisch/.test(tw({ state: 'Fehler', error: 'x E_UNKNOWN' }).hint));
   assert.ok(/folgt dem Knopf/.test(card(diagOf({}, { compStep: 0 }), 'Lautstärke').value));
   assert.ok(/noch nicht abgeglichen/.test(card(diagOf({}, { points: 0 }), 'Lautstärke').hint));
+  assert.ok(/aus bei Radio/.test(card(diagOf({}, { mixing: false, needsAm: true, skipped: true }), 'Tonweg').value) && !/läuft./.test(diagOf({}, { mixing: false, needsAm: true, skipped: true }).text));
   assert.ok(/Musik sehr leise/.test(card(diagOf({}, { compDb: 14 }), 'Lautstärke').hint));
 });
 
@@ -703,7 +739,7 @@ test('Lautstärkeknopf: Drehen gibt den Knopf der Musik (Motorsound stumm, Verbi
   am.vol = 25; await r._knobTick();          // weiter gedreht: bleibt frei
   await r._step();
   assert.strictEqual(am.conns.length, 0);
-  r.knobAt = Clock.now() - 2000;              // 2 s Ruhe
+  r.knobAt = Clock.now() - CarRoute.KNOB_REST_MS - 100;   // Ruhe
   await r._step();
   assert.strictEqual(am.conns.length, 1, 'nach Ruhe wieder verbunden');
   assert.ok(r.audible());
@@ -814,7 +850,7 @@ test('Lautstärkeknopf: Lautstärke-Sprung des Autos beim Verbinden/Trennen ist 
   await r._step();                                    // trennen -> Auto senkt Senke 1
   assert.strictEqual(am.conns.length, 0);
   await r._knobTick();                                // Sprung durchs Trennen: verlängert höchstens die Pause
-  r.knobAt = Clock.now() - 2000;
+  r.knobAt = Clock.now() - CarRoute.KNOB_REST_MS - 100;
   await r._step();                                    // wieder verbinden -> Auto hebt an
   assert.strictEqual(am.conns.length, 1, 'nach Ruhe wieder verbunden');
   for (let i = 0; i < 4; i++) { await r._knobTick(); expire(); }

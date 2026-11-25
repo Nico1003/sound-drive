@@ -16,7 +16,7 @@ function family(name) {
     try {
         const j = JSON.parse(fs.readFileSync(path.join(DIR, name + '.json'), 'utf8'));
         fam = j.sizes.map((s) => ({
-            size: s.size, ascent: s.ascent, descent: s.descent, atlasW: s.atlasW, atlasH: s.atlasH,
+            size: s.size, ascent: s.ascent, descent: s.descent, atlasW: s.atlasW, atlasH: s.atlasH, split: s.split || 0,
             glyphs: s.glyphs, _alpha: s.alpha, alpha: null, family: name, cacheKey: j.cacheKey || '',
         }));
     } catch (e) { fam = null; }
@@ -52,6 +52,17 @@ const PIECE_H = 512;
 
 function pieces(f) {
     if (f._pieces !== undefined) return f._pieces;
+    if (f.split) {
+        // letters added later (kit/tools/bake_german.py) in rows of their own: the first piece is the atlas as every
+        // other app has it (the same id, so the renderer holds it once), the second one only the new rows
+        if (!f.alpha) f.alpha = zlib.inflateSync(Buffer.from(f._alpha, 'base64'));
+        f._pieceOf = Object.create(null);
+        Object.keys(f.glyphs).forEach((k) => { f._pieceOf[k] = f.glyphs[k][1] >= f.split ? 1 : 0; });
+        return (f._pieces = [[0, f.split, f.cacheKey || ''], [f.split, f.atlasH, (f.cacheKey || '') + '/de1.']].map((p) => ({
+            size: f.size, ascent: f.ascent, descent: f.descent, atlasW: f.atlasW, atlasH: p[1] - p[0],
+            glyphs: f.glyphs, alpha: f.alpha.subarray(p[0] * f.atlasW, p[1] * f.atlasW), family: f.family, cacheKey: p[2], y0: p[0],
+        })));
+    }
     if (!(f.atlasH > PIECE_H)) return (f._pieces = null);
     if (!f.alpha) f.alpha = zlib.inflateSync(Buffer.from(f._alpha, 'base64'));
     const drawn = Object.keys(f.glyphs).filter((k) => f.glyphs[k][2] && f.glyphs[k][3])

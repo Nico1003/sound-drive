@@ -82,8 +82,9 @@ Konstantfahrt, Teillast):
 - **Lautstärkeknopf:** Läuft Musik über **CarPlay** (oder Android Auto), mischt Sound Drive den Motorsound direkt in die
   Musik: Die Musik wird nicht abgesenkt, nichts pausiert, der Knopf gehört der Musik. Ohne solche Musik
   (Pause, Radio, Bluetooth) nimmt die App den Overlay-Weg. Den behandelt das Auto wie eine Durchsage: Es senkt die Musik ab
-  und gibt ihm den Knopf. Darum tritt der Motorsound dort beim Drehen kurz zur Seite (abschaltbar) und kommt 1–3 Sekunden
-  nach dem letzten Drehen zurück.
+  und gibt ihm den Knopf. Darum tritt der Motorsound dort beim Drehen kurz zur Seite (abschaltbar) und kommt 2–4 Sekunden
+  nach dem letzten Drehen zurück. Wer das bei Radio nicht möchte: **Motorsound bei Radio, Bluetooth und USB** ausschalten –
+  dann bleibt er dort still, und Radio und Knopf verhalten sich wie ohne die App.
 - **Motorsound unabhängig vom Lautstärkeknopf** (Standard: Normal): Die App liest die Lautstärke des Autos mit und regelt
   den Motorsound sofort gegenläufig – er bleibt beim Drehen gleich laut, eingestellt wird er nur mit dem Regler in der App.
 - **Lautstärke abgleichen:** Wie viel lauter eine Stufe am Knopf macht, ist nicht überall gleich. Im Stand, Musik an, in den
@@ -100,8 +101,8 @@ Konstantfahrt, Teillast):
   bildet das echte Drehzahlband auf das Profil ab
 - **Experten:** Tonweg und Lastquelle (zum Ausprobieren in anderen Autos)
 - **Testsound:** 9 Sekunden Leerlauf → Vollgas → Schub, auch im Stand
-- **BMW-Lautstärkeanzeige:** BMWs eigener Lautstärkebalken läge sonst unter der Seite. Beim Drehen tritt sie für 2,5 Sekunden
-  zurück (abschaltbar): BMWs Anzeige ist zu sehen, die Seite steht solange als Bild dahinter
+- **BMW-Lautstärkeanzeige:** BMWs eigener Lautstärkebalken läge sonst unter der Seite. Beim Drehen wird genau seine Stelle für
+  1,8 Sekunden durchsichtig (abschaltbar); die Seite darum herum bleibt, wie sie ist
 - **Audio-Diagnose** in klaren Worten: ein Satz zum Gesamtzustand, darunter sechs Karten (Audio-Dienst, Daten vom Auto,
   Tonweg, Ton, Lautstärke, Start) mit Ampel und Tipp, was zu tun ist. **Technische Details** zeigt Verbindungen, Quellen,
   Kanäle und Ringpuffer (auch im QR-Log)
@@ -152,8 +153,8 @@ Klappt es nicht auf Anhieb: In der Statuszeile sollte „In der CarPlay-Musik“
 
 | Komponente | Version |
 |---|---|
-| Sound Drive (App) | 1.1.0 |
-| Sound Drive Audio (Tool) | 1.1.0 |
+| Sound Drive (App) | 1.1.1 |
+| Sound Drive Audio (Tool) | 1.1.1 |
 
 ---
 

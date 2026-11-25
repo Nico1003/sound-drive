@@ -151,16 +151,24 @@ test('not in front, then in front (not on screen yet) within 1.5 s: the app stay
     } finally { t.end(); }
 });
 
-test('yieldToHmi: the surface goes, the HMI gets the page as a picture, and it comes back by itself', async () => {
+test('peekVolume: see-through where the HMI shows its volume bar, the page stays, and it closes by itself', async () => {
     const x = await setup(), d = x.d;
     page(d, 10);
-    const pics = [];
-    d.last.softImage = (n) => { pics.push(n); return Promise.resolve(); };
-    assert.ok(d.active() && d.yieldToHmi(150));
-    assert.ok(!d.gpu.visible && !d.active() && pics.length === 1, 'surface gone, picture in the HMI');
-    assert.ok(d.yieldToHmi(150) && pics.length === 1, 'again: only longer');
-    assert.ok(await waitFor(() => d.gpu.visible && d.active(), 1500), 'back');
-    d.sheet = {}; assert.strictEqual(d.yieldToHmi(100), false, 'not over settings'); d.sheet = null;
+    const soft = [];
+    d.last.softImage = (n) => { soft.push(n); return Promise.resolve(); };
+    // the last clear in the frame and the clip before it
+    const hole = () => {
+        const u = d.outRec.u.subarray(0, d.outRec.n), f = new Float32Array(u.buffer, u.byteOffset, u.length), v = require('../runtime/display').HMI7.volume;
+        for (let i = 0; i < u.length - 4; i++) if (f[i + 1] === v.x && f[i + 2] === v.y && f[i + 3] === v.w && f[i + 4] === v.h) return true;
+        return false;
+    };
+    assert.ok(await waitFor(() => d.gpu.visible) && d.active() && !hole());
+    const before = JSON.stringify(d.place);
+    assert.ok(d.peekVolume(150) && hole() && d.gpu.visible && d.active(), 'a window, nothing else');
+    assert.ok(d.peekVolume(150) && hole(), 'again: only longer');
+    page(d, 11); assert.ok(hole(), 'also in the next frames');
+    assert.ok(await waitFor(() => !d.peeking, 1500) && !hole(), 'closed');
+    assert.ok(JSON.stringify(d.place) === before && !soft.length, 'layout and the HMI picture untouched');
     x.end();
 });
 

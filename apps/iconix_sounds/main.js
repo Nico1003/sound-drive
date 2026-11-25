@@ -28,18 +28,18 @@ const CarRoute = require('./car_route');
 const Diagnose = require('./diagnose');
 const Clock = require('./clock');
 
-const VERSION = '1.1.0';
+const VERSION = '1.1.1';
 // eigener Reiter "Sound" neben "Settings" im Kopf des Kits (führt aus den Einstellungen zurück)
 const TAB_INFO = { tabs: ['Sound'], sel: 0, badges: [] };
 // Audiomanager-Verbindung: Sie braucht im Auto ~6 s, bis sie hörbar ist (CS_CONNECTED). Darum wird sie schon beim
 // Aufwachen des Autos aufgebaut (erste Fahrzeugdaten) und gehalten, solange der Motor läuft oder kürzlich lief –
 // sonst fehlten bei jedem Motorstart und nach jeder Pause ein paar Sekunden Ton.
 const ROUTE_KEEP_MS = 120000;  // so lange nach dem letzten Lebenszeichen (Ton, laufender Motor, Aufwachen) halten
-const BMW_SHOW_MS = 2500;      // so lange bleibt BMWs Anzeige der Lautstärke nach dem letzten Dreh zu sehen
+const BMW_SHOW_MS = 1800;      // so lange bleibt das Fenster für BMWs Lautstärkebalken nach dem letzten Dreh offen
 const WAKE_GAP_MS = 300000;    // so lange ohne Fahrzeugdaten = das Auto hat geschlafen
 const DEFAULTS = {
   enabled: true, profile: Profiles.DEFAULT, volume: 80, intensity: 70, sport: false,
-  muteParked: false, duck: true, knobMusic: true, knobComp: 1, followMode: true, narrow: false, speedVol: 4, startSound: true, bassDb: 0, bark: 100, loadSource: 'auto', route: 'auto', knobCal: 'off', bmwVolume: true, maxTorque: 400, carIdle: 800, carRedline: 4800
+  muteParked: false, duck: true, knobMusic: true, radio: true, knobComp: 1, followMode: true, narrow: false, speedVol: 4, startSound: true, bassDb: 0, bark: 100, loadSource: 'auto', route: 'auto', knobCal: 'off', bmwVolume: true, maxTorque: 400, carIdle: 800, carRedline: 4800
 };
 
 function setting(settings, key) {
@@ -100,7 +100,7 @@ function startCore(host) {
     synthCfgCache.mixProbe = synthCfgCache.route === 'auto' ? CarRoute.MIX_CHANNELS : [];
     synthCfgCache.device = rt.device;
     synthCfgCache.steady = String(g('knobCal')) === 'on' && feed.speed() < 1;
-    uiCfg = { muteParked: bool(g('muteParked')), duck: bool(g('duck')), wide: !bool(g('narrow')), knobMusic: bool(g('knobMusic')), knobComp: num(g('knobComp'), 1), cal: String(g('knobCal')) };
+    uiCfg = { muteParked: bool(g('muteParked')), duck: bool(g('duck')), wide: !bool(g('narrow')), knobMusic: bool(g('knobMusic')), radio: bool(g('radio')), knobComp: num(g('knobComp'), 1), cal: String(g('knobCal')) };
   };
 
   const link = new AudioLink(log, VERSION);
@@ -111,7 +111,7 @@ function startCore(host) {
   let outDb = 0;             // Ausgleich des Lautstärkeknopfs (CarRoute.compDb)
   const pushCfg = () => {
     refresh(); synthCfgCache.outDb = outDb; synthCfgCache.duck = ducked; synthCfgCache.hold = held; link.configure(synthCfgCache);
-    if (core) { core.route.setDuck(uiCfg.duck); core.route.setKnob(uiCfg.knobMusic); core.route.setComp(uiCfg.knobComp); calMode(); }
+    if (core) { core.route.setDuck(uiCfg.duck); core.route.setKnob(uiCfg.knobMusic); core.route.setRadio(uiCfg.radio); core.route.setComp(uiCfg.knobComp); calMode(); }
   };
   // Abgleich der Lautstärke (Einstellung): gleichmäßiger Ton, +/− stellt den Motorsound bei der jetzigen Auto-Lautstärke nach
   let calOn = false;
@@ -195,6 +195,7 @@ function startCore(host) {
   }, 500);
   route.setDuck(uiCfg.duck);
   route.setKnob(uiCfg.knobMusic);
+  route.setRadio(uiCfg.radio);
   // am Knopf gedreht: Motorsound sofort gegenregeln, damit er gleich laut bleibt
   route.onComp = db => { if (db === outDb) return; outDb = db; synthCfgCache.outDb = db; link.configure(synthCfgCache); };
   route.setComp(uiCfg.knobComp);
@@ -229,26 +230,14 @@ function startCore(host) {
 //   fillRect(x, y, w, h, c) · roundRect(x, y, w, h, r, c) · text(str, x, baselineY, size, c, {font, align, literal})
 //   arc(cx, cy, r0, r1, a0, a1, c, opts): Winkel in GRAD, im Uhrzeigersinn ab 12 Uhr
 //   Farben: '#rrggbb' (canvas.js rgba)
-// Die Schriften des Kits (label/bold/light) enthalten keine Umlaute -> ä/ö/ü/ß werden umschrieben.
+// Umlaute, ß und Anführungszeichen haben die Schriften des Kits seit 1.1.1 (kit/tools/bake_german.py).
 // ---------------------------------------------------------------------------
-const UMLAUT = { 'ä': 'ae', 'ö': 'oe', 'ü': 'ue', 'Ä': 'Ae', 'Ö': 'Oe', 'Ü': 'Ue', 'ß': 'ss', '„': '"', '“': '"', '”': '"' };
-const textCache = new Map();
-function kitText(s) {
-  s = String(s);
-  let v = textCache.get(s);
-  if (v === undefined) {
-    v = s.replace(/[äöüÄÖÜß„“”]/g, ch => UMLAUT[ch]);
-    if (textCache.size > 500) textCache.clear();
-    textCache.set(s, v);
-  }
-  return v;
-}
 const RAD2DEG = 180 / Math.PI;
 function kitGfx(c) {
   return {
     rect: (x, y, w, h, col) => c.fillRect(x, y, w, h, col),
     rrect: (x, y, w, h, r, col) => c.roundRect(x, y, w, h, r, col),
-    text: (s, x, y, size, col, align, weight) => c.text(kitText(s), x, y, size, col, { align: align || 'left', font: weight === 'light' ? 'light' : (weight ? 'bold' : 'label'), literal: true }),
+    text: (s, x, y, size, col, align, weight) => c.text(String(s), x, y, size, col, { align: align || 'left', font: weight === 'light' ? 'light' : (weight ? 'bold' : 'label'), literal: true }),
     line: (xa, ya, xb, yb, w, col) => c.line(xa, ya, xb, yb, w, col),
     arc: (cx, cy, r, th, a0, a1, col) => {
       // ui.js: Radiant ab 3 Uhr -> Kit: Grad ab 12 Uhr; über 360° hinaus in zwei Stücke teilen
@@ -419,10 +408,10 @@ mgu.run({
         return true;
       });
     }
-    // BMWs eigene Anzeige der Lautstärke liegt sonst unter unserer Seite: beim Drehen kurz Platz machen
+    // BMWs eigener Lautstärkebalken liegt sonst unter unserer Seite: beim Drehen dort ein Fenster öffnen
     c.route.page = true;
     if (ctx.ui.onVisible) ctx.ui.onVisible((name, on) => { if (name === 'MAIN') c.route.page = !!on; });
-    c.route.onTurn = () => { if (ctx.yieldToHmi && bool(get('bmwVolume')) && !c.cal() && c.route.page) ctx.yieldToHmi(BMW_SHOW_MS); };
+    c.route.onTurn = () => { if (ctx.peekVolume && bool(get('bmwVolume')) && c.route.page) ctx.peekVolume(BMW_SHOW_MS); };
     if (ctx.onTap) {
       ctx.onTap((x, y) => {
         const h = UI.hitAt(Profiles.list, x, y, diag, c.ui().wide);
@@ -442,7 +431,6 @@ mgu.run({
     const st = { profiles: Profiles.list };
     let lastKey = '', lastDraw = 0;
     ctx.loop('MAIN', 20, () => {
-      if (ctx.display && ctx.display.yielding) return undefined;      // BMWs Anzeige ist zu sehen: das Bild steht
       const s = c.last();
       const cfg = c.synthCfg();
       const a = audioStatus(c), now = Clock.now(), k = c.cal();

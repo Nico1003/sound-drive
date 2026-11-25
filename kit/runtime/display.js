@@ -64,6 +64,7 @@ const HMI7 = {
     colEnd: 530,                                // the back arrow column shows the HMI down to here (home, back arrow)
     headBg: '#000000',                          // the HMI's title / status strip
     status: { x: 1340, h: 76 },                 // status icons top right (notifications .. clock)
+    volume: { x: 528, y: 448, w: 863, h: 238 }, // the HMI's volume bar (measured on a photo, +- 1 px; its edge is 6 px wide)
 };
 /* iDrive 8 (Hmi8, 2880 x 960; mgu-render tells apps that size there): the app goes in the area under the HMI's
  * status bar the renderer reports (X_READY; its default 0,76 2880x764 here), no back arrow column, no HMI status
@@ -75,6 +76,7 @@ const HMI8 = Object.assign({}, HMI7, {
     left: 0,
     colEnd: 0,
     status: { x: 2880, h: 0 },
+    volume: null,
 });
 /* the geometry for the screen the renderer reports; the current one in HMI (set by Display._place) */
 const geometryFor = (scr) => (scr && scr.w === HMI8.screen.w && scr.h === HMI8.screen.h ? HMI8 : HMI7);
@@ -643,35 +645,19 @@ class Display {
     }
 
     /**
-     * The HMI draws some things without taking the focus (the volume bar): they stay under the renderer's surface.
-     * For ms the surface goes and the HMI shows the page as a picture with its own things over it.
+     * The HMI draws its volume bar without taking the focus, so it is under the renderer's surface. For ms the
+     * surface is see-through exactly where that bar is; the page around it stays as it is. Also over a sheet.
      */
-    yieldToHmi(ms) {
-        if (!this.gpu || this.sheet || (!this.yielding && !this.active())) return false;
-        clearTimeout(this.yieldTimer);
-        this.yieldTimer = setTimeout(() => {
-            this.yielding = false;
-            this.bgShown = null;                // the plain background under the surface again
-            this.lastWords = null;
-            if (this.gpu && this._shown() && !this.gpu.visible) { this.shownT = Date.now(); this.softDone = false; this.gpu.show(true); }
-            this.tickHandlers.forEach((fn) => fn());
-            this._layoutChanged();
-        }, ms);
-        if (this.yielding) return true;
-        this.yielding = true;
-        this.gpu.show(false);
-        const L = this.last;
-        if (L) {
-            const cv = new Canvas(L.w, L.h);
-            play(L.frame.words(), cv);
-            Promise.resolve(L.softImage(L.name, cv)).catch(() => {});
-        }
+    peekVolume(ms) {
+        if (!HMI.volume || !this.active() || !this.place.full || !this.app) return false;
+        clearTimeout(this.peekTimer);
+        this.peekTimer = setTimeout(() => { this.peeking = false; this._repaint(); }, ms);
+        if (!this.peeking) { this.peeking = true; this._repaint(); }
         return true;
     }
 
     /** the screen is up and not covered by an HMI popup */
     _shown() {
-        if (this.yielding) return false;
         // the HMI's settings screen over ours (no drawn settings: another renderer, software): it shows, not our picture
         return this.ui.isVisible(this.screen.name) && !this.ui.isVisible('SETTINGS') && (!this.ui.hasFocus || this.ui.hasFocus(this.screen.name));
     }
@@ -909,6 +895,8 @@ class Display {
         c.clip(sx, 0, W - sx, HMI.status.h).clear(0).noclip();
         if (hx > 0) c.clip(0, 0, hx, HMI.colEnd - pl.y).clear(0).noclip();
         drawCredit(c, W - 18, FULL.headH + 17);
+        const v = this.peeking && HMI.volume;
+        if (v) c.clip(v.x - pl.x, v.y - pl.y, v.w, v.h).clear(0).noclip();
         r.xf(1, 0, 0).append(c).xf();
     }
 

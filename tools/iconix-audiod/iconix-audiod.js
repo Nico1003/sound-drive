@@ -28,7 +28,7 @@ const cp = require('child_process');
 const path = require('path');
 const E = require('./engine');
 
-const VERSION = '1.1.0';
+const VERSION = '1.1.1';
 const SOCKETS = process.env.ICONIX_AUDIOD_SOCKET
   ? [process.env.ICONIX_AUDIOD_SOCKET]
   : ['/run/iconix-audiod/audiod.sock', '/tmp/iconix-audiod.sock'];
