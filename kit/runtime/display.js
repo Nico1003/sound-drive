@@ -642,8 +642,36 @@ class Display {
         this.lastWords = null;              // the renderer draws the page at the new oy with the next frame
     }
 
+    /**
+     * The HMI draws some things without taking the focus (the volume bar): they stay under the renderer's surface.
+     * For ms the surface goes and the HMI shows the page as a picture with its own things over it.
+     */
+    yieldToHmi(ms) {
+        if (!this.gpu || this.sheet || (!this.yielding && !this.active())) return false;
+        clearTimeout(this.yieldTimer);
+        this.yieldTimer = setTimeout(() => {
+            this.yielding = false;
+            this.bgShown = null;                // the plain background under the surface again
+            this.lastWords = null;
+            if (this.gpu && this._shown() && !this.gpu.visible) { this.shownT = Date.now(); this.softDone = false; this.gpu.show(true); }
+            this.tickHandlers.forEach((fn) => fn());
+            this._layoutChanged();
+        }, ms);
+        if (this.yielding) return true;
+        this.yielding = true;
+        this.gpu.show(false);
+        const L = this.last;
+        if (L) {
+            const cv = new Canvas(L.w, L.h);
+            play(L.frame.words(), cv);
+            Promise.resolve(L.softImage(L.name, cv)).catch(() => {});
+        }
+        return true;
+    }
+
     /** the screen is up and not covered by an HMI popup */
     _shown() {
+        if (this.yielding) return false;
         // the HMI's settings screen over ours (no drawn settings: another renderer, software): it shows, not our picture
         return this.ui.isVisible(this.screen.name) && !this.ui.isVisible('SETTINGS') && (!this.ui.hasFocus || this.ui.hasFocus(this.screen.name));
     }

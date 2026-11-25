@@ -151,6 +151,19 @@ test('not in front, then in front (not on screen yet) within 1.5 s: the app stay
     } finally { t.end(); }
 });
 
+test('yieldToHmi: the surface goes, the HMI gets the page as a picture, and it comes back by itself', async () => {
+    const x = await setup(), d = x.d;
+    page(d, 10);
+    const pics = [];
+    d.last.softImage = (n) => { pics.push(n); return Promise.resolve(); };
+    assert.ok(d.active() && d.yieldToHmi(150));
+    assert.ok(!d.gpu.visible && !d.active() && pics.length === 1, 'surface gone, picture in the HMI');
+    assert.ok(d.yieldToHmi(150) && pics.length === 1, 'again: only longer');
+    assert.ok(await waitFor(() => d.gpu.visible && d.active(), 1500), 'back');
+    d.sheet = {}; assert.strictEqual(d.yieldToHmi(100), false, 'not over settings'); d.sheet = null;
+    x.end();
+});
+
 test('ctx.onTouch: a gesture the app takes gets every move and no tap; one it does not take taps as before', async () => {
     const t = await setup(), d = t.d;
     try {

@@ -122,10 +122,10 @@ test('Ablehnung und fehlendes SOME/IP werden als Fehler angezeigt, ohne zu werfe
 test('Wege ohne Audiomanager machen keine Aufrufe', async () => {
   const { am, signals } = fakeAm();
   const r = new CarRoute(signals, quiet, null);
-  r.want('carplay', true); await r._step();
-  r.want('alsa', true); await r._step();
+  r.want('mixAndroid', true); await r._step();
+  r.want('mixCarplay', true); await r._step();
   assert.strictEqual(am.calls.length, 0);
-  assert.ok(/ohne Audiomanager/.test(r.short()));
+  assert.ok(/In der CarPlay-Musik/.test(r.short()));
 });
 
 test('liegengebliebene eigene Verbindung desselben Boots wird beim Start getrennt', async () => {
@@ -158,28 +158,20 @@ test('SmartX: Kanal auflösen, Format aus dem Namen, kein Rückfall auf andere G
   assert.deepStrictEqual(E.formatOf('plug:smartx:Media_Overlay_Converter_Source_CF_24_MONO'), { rate: 24000, ch: 1 });
   assert.deepStrictEqual(E.formatOf('plug:smartx:CarLifeMedia_CF_48_STEREO'), { rate: 48000, ch: 2 });
   process.env.ICONIX_PYTHON = process.execPath; // irgendein vorhandenes Programm als "Python"
-  const c = E.candidates({ device: 'plug:smartx:CarLifeMedia_CF_48_STEREO' });
-  assert.strictEqual(c.length, 1);
-  assert.deepStrictEqual(c[0].argv.slice(1), ['play', 'plug:smartx:CarLifeMedia_CF_48_STEREO', '48000', '60000', '2']);
-  const m = E.candidates({ device: 'plug:smartx:Media_Overlay_Converter_Source_CF_24_MONO' });
-  assert.deepStrictEqual(m[0].argv.slice(3), ['24000', '60000', '1']);
+  const c = E.playerFor('plug:smartx:CarLifeMedia_CF_48_STEREO');
+  assert.deepStrictEqual(c.argv.slice(1), ['play', 'plug:smartx:CarLifeMedia_CF_48_STEREO', '48000', '60000', '2']);
+  assert.deepStrictEqual(E.playerFor('plug:smartx:Media_Overlay_Converter_Source_CF_24_MONO').argv.slice(3), ['24000', '60000', '1']);
+  assert.deepStrictEqual(E.playerFor('mix:CarPlayMain_CF_48_STEREO').argv.slice(1), ['mix', 'CarPlayMain_CF_48_STEREO', '24000']);
+  assert.ok(E.playerFor('default') === null && E.playerFor(undefined) === null, 'nur die Tonkanäle des Autos');
 });
 
-test('Umrechnung 48 -> 24 kHz: Tiefpass gegen Aliasing, tiefe Töne bleiben', () => {
-  const tone = (hz, n) => { const f = new Float32Array(n * 2); for (let i = 0; i < n; i++) f[i * 2] = f[i * 2 + 1] = 0.5 * Math.sin(2 * Math.PI * hz * i / 48000); return f; };
-  const rms = (b) => { let s = 0; const m = b.length / 2; for (let i = m / 2; i < m; i++) { const v = b.readInt16LE(i * 2) / 32767; s += v * v; } return Math.sqrt(s / (m / 2)); };
-  const n = 9600;
-  const low = E.toPcmFmt(tone(500, n), n, { rate: 24000, ch: 1 }, new E.Decimator(2));
-  const high = E.toPcmFmt(tone(18000, n), n, { rate: 24000, ch: 1 }, new E.Decimator(2)); // würde als 6 kHz zurückfallen
-  assert.strictEqual(low.length, n); // n/2 Frames x 2 Byte
-  assert.ok(rms(low) > 0.3, 'tiefer Ton bleibt: ' + rms(low));
-  assert.ok(rms(high) < 0.005, '18 kHz wird unterdrückt: ' + rms(high));
-  // Zustand über Blöcke: zwei halbe Blöcke = ein ganzer
-  const dec = new E.Decimator(2), t = tone(500, n);
-  const a = E.toPcmFmt(t.subarray(0, n), n / 2, { rate: 24000, ch: 1 }, dec);
-  const b = E.toPcmFmt(t.subarray(n), n / 2, { rate: 24000, ch: 1 }, dec);
-  assert.ok(Buffer.concat([a, b]).equals(low));
-  assert.strictEqual(E.toPcmFmt(t, n, { rate: 48000, ch: 2 }).length, n * 4);
+test('Ausgabeformat: Stereo, Mono gemittelt, Grundpegel, nichts läuft über', () => {
+  const x = new Float32Array([0.5, -0.25, 2, 2, -2, -2, NaN, 0]);
+  const st = E.toPcm(x, 4, 2), mo = E.toPcm(x, 4, 1);
+  assert.deepStrictEqual([st.length, mo.length], [16, 8]);
+  assert.deepStrictEqual([0, 1, 2, 4].map((i) => st.readInt16LE(i * 2)), [16383, -8191, 32767, -32767]);
+  assert.deepStrictEqual([0, 2, 4, 6].map((i) => mo.readInt16LE(i)), [4095, 32767, -32767, 0]);
+  assert.strictEqual(E.toPcm(x, 1, 2, 0.5).readInt16LE(0), 8191);
 });
 
 // ---- Synthese (synth.js v2) ----------------------------------------------------
@@ -288,8 +280,8 @@ test('Rechenzeit bei 24 kHz im Rahmen (Head Unit)', () => {
 test('Dienst rendert für einen 24-kHz-Mono-Kanal halb so viele Frames mit 2 Byte', () => {
   const eng = new E.Engine({ log() {} });
   const writes = [];
-  eng.out = { child: {}, blocked: false, fmt: { rate: 24000, ch: 1 }, step: E.Output.prototype.step, list: [], opts: { device: 'x' },
-    write(b) { writes.push(b.length); return true; }, start() { return true; }, stop() {} };
+  eng.out = { child: {}, blocked: false, fmt: { rate: 24000, ch: 1 }, step: E.Output.prototype.step, level() {}, opts: { device: 'x' },
+    write(b) { writes.push(b.length); return true; }, level() {}, start() { return true; }, stop() {} };
   eng.synth.configure({ enabled: true, volume: 0.5 });
   eng.params({ rpm: 2000, load: 0.5, speed: 50, overrun: false });
   eng.t0 = Clock.now() - 100; eng.written = 0;
@@ -303,7 +295,7 @@ test('Dienst rendert für einen 24-kHz-Mono-Kanal halb so viele Frames mit 2 Byt
 test('Regelkreis mit Rückmeldung des Players: Vorlauf begrenzt (Start 100 ms), auch wenn der Kanal hängt', () => {
   const eng = new E.Engine({ log() {} });
   let bytes = 0;
-  eng.out = { child: {}, blocked: false, fmt: { rate: 24000, ch: 1 }, step: E.Output.prototype.step, list: [], opts: { device: 'x' },
+  eng.out = { child: {}, blocked: false, fmt: { rate: 24000, ch: 1 }, step: E.Output.prototype.step, level() {}, opts: { device: 'x' },
     played: 0, write(b) { bytes += b.length; return true; }, start() { return true; }, stop() {} };
   eng.synth.configure({ enabled: true, volume: 0.5 });
   eng.params({ rpm: 2000, load: 0.5, speed: 50, overrun: false });
@@ -354,7 +346,7 @@ test('Autostart: App hat einen Hintergrund-Einstieg (background) und app.json au
 
 test('Vorlauf: Start 160 ms, Aussetzer +30 ms, ruhig wieder knapper – aber nicht wieder bis zum nächsten Aussetzer', () => {
   const eng = new E.Engine({ log() {} });
-  eng.out = { child: {}, blocked: false, fmt: { rate: 24000, ch: 1 }, step: E.Output.prototype.step, list: [], opts: { device: 'x' },
+  eng.out = { child: {}, blocked: false, fmt: { rate: 24000, ch: 1 }, step: E.Output.prototype.step, level() {}, opts: { device: 'x' },
     played: 0, underruns: 0, write() { return true; }, start() { return true; }, stop() {} };
   eng.synth.configure({ enabled: true, volume: 0.5 });
   eng.params({ rpm: 2000, load: 0.5, speed: 50, overrun: false });
@@ -420,12 +412,12 @@ test('Absenken im Klang: rund -12 dB', () => {
   assert.ok(db < -9 && db > -15, 'abgesenkt um ' + db.toFixed(1) + ' dB');
 });
 
-test('Einstellungen: Telefon/Ansagen-Option, Experten- und Motor-Gruppe, Gerät nur bei Tonweg 7', () => {
+test('Einstellungen: Telefon/Ansagen-Option, Experten- und Motor-Gruppe, Tonwege', () => {
   const j = JSON.parse(fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/app.json'), 'utf8'));
   const by = Object.fromEntries(j.settings.map((x) => [x.key, x]));
   assert.strictEqual(by.duck.default, true);
   assert.strictEqual(by.route.group, 'Experten');
-  assert.deepStrictEqual(by.alsaDevice.when, { route: 'alsa' });
+  assert.ok(!by.alsaDevice && by.route.options.length === 4, 'nur Tonwege, die im Auto gehen');
   assert.strictEqual(by.carRedline.group, 'Motor anpassen');
   assert.ok(!by.dialVolume);
 });
@@ -434,7 +426,7 @@ test('Profile: Auswahl (Standard Power Four), kein Sechser/Dezent/Elektro mehr',
   assert.strictEqual(Profiles.DEFAULT, 'turbo4');
   assert.deepStrictEqual(Profiles.ids, ['turbo4', 'supra', 'boxer', 'boxer6', 'turbo5', 'v8', 'v10', 'v12']);
   assert.strictEqual(Profiles.get('subtle').id, 'turbo4', 'alte gespeicherte Auswahl fällt auf den Standard zurück');
-  assert.ok(Profiles.list.every((p) => p.kind === 'combustion' && p.desc));
+  assert.ok(Profiles.list.every((p) => p.layout.length && p.desc));
   const j = JSON.parse(fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/app.json'), 'utf8'));
   const opt = j.settings.find((x) => x.key === 'profile');
   assert.deepStrictEqual(opt.options.map((o) => o[0]), Profiles.ids);
@@ -551,12 +543,66 @@ test('Breite Ansicht: Knöpfe nutzen die ganze Breite, schmale bleibt links von 
   assert.ok(!UI.hitAt(Profiles.list, 1500, 110, false, false), 'in schmaler Ansicht nicht');
 });
 
+const Diagnose = require(path.join(ROOT, 'apps/iconix_sounds/diagnose.js'));
+const DIAG_BASE = { connected: true, waiting: false, why: '', ds: { version: '9.9.9', playing: true, underruns: 0 }, version: '9.9.9', outdated: '', rpm: 2210, rpmAge: 50, speed: 87.4, enabled: true, volume: 0.8,
+  route: { label: 'In der Android-Auto-Musik', state: 'aus', conn: null, needsAm: false, error: null, mixing: true, held: false, vol: 33, compStep: 1, compDb: -6.5, compMax: 14, points: 4 },
+  marks: [{ name: 'app', text: 'App (AUTOSTART)', up: 67 }, { name: 'play', text: 'Ton läuft', up: 70 }] };
+const diagOf = (o, r) => Diagnose.build(Object.assign({}, DIAG_BASE, o, { route: Object.assign({}, DIAG_BASE.route, r) }));
+const DIAG_OK = { details: false, lines: [], model: diagOf() };
+const DIAG_BAD = { details: false, lines: [], model: diagOf({ connected: false, ds: null, why: 'Dienst läuft, antwortet aber nicht (ECONNREFUSED)', rpm: null, marks: [] },
+  { mixing: false, needsAm: true, state: 'Fehler', error: 'connect 1048->1024 abgelehnt: E_NOT_POSSIBLE und noch sehr viel mehr Text dahinter' }) };
+
+test('Diagnose: klare Worte, Ampel und nächster Schritt', () => {
+  const card = (m, t) => m.cards.find((c) => c.title === t);
+  const ok = diagOf();
+  assert.ok(ok.state === 'ok' && /läuft/.test(ok.text) && ok.cards.length === 6 && ok.cards.every((c) => c.state === 'ok'), JSON.stringify(ok));
+  assert.strictEqual(card(ok, 'Lautstärke').value, 'App 80 %, Auto 33 (Ausgleich -6,5 dB)');
+  assert.ok(/von selbst gestartet, 67 s/.test(card(ok, 'Start').value));
+  assert.ok(/Motor aus/.test(card(diagOf({ rpm: 0 }), 'Daten vom Auto').value) && diagOf({ rpm: 0 }).state === 'ok');
+  let m = diagOf({ connected: false, ds: null, why: 'Dienst läuft nicht' });
+  assert.ok(m.state === 'bad' && /Store installieren/.test(m.text), m.text);
+  m = diagOf({ connected: false, waiting: true, ds: null, why: 'Dienst läuft nicht' }); assert.strictEqual(card(m, 'Audio-Dienst').state, 'wait');
+  m = diagOf({ outdated: '1.0.0', ds: { version: '1.0.0' } }); assert.ok(m.state === 'bad' && /aktualisieren/.test(m.text));
+  m = diagOf({ enabled: false }); assert.ok(m.state === 'wait' && /stumm/.test(m.text));
+  m = diagOf({ volume: 0 }); assert.ok(/0 %/.test(card(m, 'Ton').value));
+  m = diagOf({ ds: { version: '9.9.9', error: 'Kanal belegt' } }); assert.ok(m.state === 'bad' && /Kanal belegt/.test(m.text));
+  m = diagOf({ ds: { version: '9.9.9', playing: true, underruns: 30 } }); assert.ok(/30 Aussetzer/.test(card(m, 'Ton').value) && card(m, 'Ton').hint);
+  m = diagOf({ rpm: null }); assert.ok(/Motor starten/.test(card(m, 'Daten vom Auto').hint));
+  const am = { mixing: false, needsAm: true }, tw = (x) => card(diagOf({}, Object.assign({}, am, x)), 'Tonweg');
+  assert.strictEqual(tw({ state: 'verbunden', conn: 'CS_CONNECTED' }).state, 'ok');
+  assert.strictEqual(tw({ state: 'verbunden', conn: 'CS_CONNECTING' }).state, 'wait');
+  assert.ok(/von selbst wieder/.test(tw({ state: 'Fehler', error: 'x E_NOT_POSSIBLE' }).hint));
+  assert.ok(/Automatisch/.test(tw({ state: 'Fehler', error: 'x E_UNKNOWN' }).hint));
+  assert.ok(/folgt dem Knopf/.test(card(diagOf({}, { compStep: 0 }), 'Lautstärke').value));
+  assert.ok(/noch nicht abgeglichen/.test(card(diagOf({}, { points: 0 }), 'Lautstärke').hint));
+  assert.ok(/Musik sehr leise/.test(card(diagOf({}, { compDb: 14 }), 'Lautstärke').hint));
+});
+
+test('BMW-Lautstärkeanzeige: nur wenn jemand am Knopf dreht, nicht bei Ansagen oder eigenem Verbinden', async () => {
+  const { am, signals } = fakeAm();
+  const r = new CarRoute(signals, quiet, null);
+  const realNow = setClock(null); let t = realNow(); setClock(() => t);
+  const got = []; r.onTurn = (v) => got.push(v);
+  const read = async (v) => { am.vol = v; t += 200; await r._knobTick(); return got.join(); };
+  try {
+    r.page = true;
+    assert.strictEqual(await read(20), '', 'erster Wert ist kein Dreh');
+    assert.strictEqual(await read(22), '22', 'auch ohne Ton und ohne Verbindung');
+    assert.strictEqual(await read(34), '22', 'großer Sprung macht das Auto');
+    r.interrupt = true; assert.strictEqual(await read(33), '22', 'Ansage'); r.interrupt = false;
+    r.knobOn = false; r.want('overlay', true); await r._step(); r.knobQuiet = t + 2000;
+    assert.strictEqual(await read(35), '22', 'eigenes Verbinden');
+    r.page = false; r.want('overlay', false); await r._step(); const n = am.calls.length; await read(36);
+    assert.strictEqual(am.calls.length, n, 'Seite zu: nichts abfragen');
+  } finally { setClock(realNow); }
+});
+
 test('Oberfläche in allen Zuständen: nichts ragt über den Rand, keine leeren Texte', () => {
   const UI = require(path.join(ROOT, 'apps/iconix_sounds/ui.js'));
   const long = 'Overlay-Mix: verbunden · leiser (Telefon/PDC) · SmartX · 24 kHz · spielt · 12 Aussetzer';
   const states = [];
   for (const wide of [false, true]) for (const mode of [null, 'eco', 'sport', 'sportplus']) for (const enabled of [true, false])
-    for (const diag of [null, { lines: Array.from({ length: 30 }, (_, i) => 'Zeile ' + i + ' ' + 'x'.repeat(90)), page: 1 }])
+    for (const diag of [null, DIAG_OK, DIAG_BAD, { details: true, model: DIAG_OK.model, lines: Array.from({ length: 30 }, (_, i) => 'Zeile ' + i + ' ' + 'x'.repeat(90)), page: 1 }])
       states.push({ profiles: Profiles.list, profile: 'turbo5', rpm: 7000, redline: 4800, speed: 250, volume: 1, enabled, sport: true, demo: true, mode, wide, diag, audio: { ok: false, text: long } });
   for (const st of states) {
     const limit = st.wide ? 1600 : 1140;
@@ -686,7 +732,7 @@ test('Hörbar erst ab CS_CONNECTED (Auto braucht ~6 s); verlorene Verbindung sof
   r2.conn.at = Clock.now() - CarRoute.AUDIBLE_AFTER_MS - 10;
   assert.ok(r2.audible());
   // Wege ohne Audiomanager sind immer hörbar
-  const r3 = new CarRoute(fakeAm().signals, quiet, null); r3.want('carplay', true);
+  const r3 = new CarRoute(fakeAm().signals, quiet, null); r3.want('mixCarplay', true);
   assert.ok(r3.audible());
 });
 
@@ -739,7 +785,7 @@ test('Oberfläche im Auto (Kit führt den Bildschirm): kein doppelter Titel, bre
   const tops = [];
   const g2 = { rect() {}, rrect(x, y) { if (y > 0) tops.push(y); }, line(x1, y1, x2, y2) { tops.push(Math.min(y1, y2)); },
     arc(cx, cy, r) { tops.push(cy - r - 10); }, text(t, x, y, size) { tops.push(y - size); } };
-  for (const diag of [null, { lines: ['a', 'b'], page: 0 }]) UI.draw(g2, { profiles: Profiles.list, profile: 'turbo4', rpm: 900, speed: 0, volume: 0.8,
+  for (const diag of [null, DIAG_OK, { details: true, lines: ['a', 'b'], page: 0 }]) UI.draw(g2, { profiles: Profiles.list, profile: 'turbo4', rpm: 900, speed: 0, volume: 0.8,
     enabled: true, own: true, wide: true, sport: true, demo: true, mode: 'sport', diag, audio: { ok: true, text: 'x' } });
   assert.ok(Math.min(...tops) >= 44, 'oberste Kante ' + Math.min(...tops) + ' (muss unter 38 + Rand liegen)');
 });
@@ -882,7 +928,7 @@ test('Dienst: Python beim Hochfahren noch nicht da – wird später gefunden', (
 
 test('Autostart: Paket, Zeiten im Log und in der Diagnose', () => {
   const src = fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/main.js'), 'utf8');
-  assert.ok(/mark\('app'/.test(src) && /mark\('data'/.test(src) && /mark\('route'/.test(src) && /mark\('play'/.test(src) && /c\.startInfo\(\)/.test(src));
+  assert.ok(/mark\('app'/.test(src) && /mark\('data'/.test(src) && /mark\('route'/.test(src) && /mark\('play'/.test(src) && /'Start: ' \+ c\.marks/.test(src));
   assert.ok(/host\.app\.on\('shutdown'/.test(src));
   const b = fs.readFileSync(path.join(ROOT, 'kit/tools/build.py'), 'utf8');
   assert.ok(/pkg\['mguAppStartType'\] = 'autostart'/.test(b));
@@ -1028,12 +1074,12 @@ test('Tonweg: veraltete Verbindungsliste wirft eine neue Verbindung nicht weg; P
   assert.ok(r2.conn && !r2.audible());
 });
 
-test('Dienst: nicht startbares Abspielprogramm gilt nicht als laufend; Startsound übersteht den Player-Start', async () => {
-  const o = new E.Output(() => {}, () => {}, {});
-  o.list = [{ name: 'fehlt', path: path.join(tmp, 'gibt-es-nicht'), argv: [] }];
-  o.error = null; o.start();
-  for (let i = 0; i < 50 && o.child; i++) await new Promise((ok) => setTimeout(ok, 20));
-  assert.ok(!o.child && o.bad.fehlt && /fehlgeschlagen/.test(o.error || ''), String(o.error));
+test('Dienst: nicht startbarer Player gilt nicht als laufend; Startsound übersteht den Player-Start', async () => {
+  const o = new E.Output(() => {}, () => {}, { device: 'smartx:X' });
+  const cp = require('child_process'), spawn = cp.spawn;
+  cp.spawn = (x, a, y) => spawn(path.join(tmp, 'gibt-es-nicht'), a, y);
+  try { o.start(); for (let i = 0; i < 50 && o.child; i++) await new Promise((ok) => setTimeout(ok, 20)); } finally { cp.spawn = spawn; }
+  assert.ok(!o.child && /fehlgeschlagen/.test(o.error || ''), String(o.error));
   const eng = new E.Engine({ log() {} });
   eng.synth.offTime = 5; eng.synth.setParams({ rpm: 700, load: 0, speed: 0 });
   assert.strictEqual(eng.synth.startT, 0);
@@ -1246,7 +1292,7 @@ test('Tonweg "auto": CarPlay-Musik -> Mix ohne Audiomanager-Verbindung, Pause/Ra
   assert.strictEqual(new CarRoute(signals, quiet, null).pick('overlayOnly', null), 'overlay');
   assert.strictEqual(new CarRoute(signals, quiet, null).pick('carlifeNav', null), 'carlifeNav');
   const app = JSON.parse(fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/app.json'), 'utf8')).settings.filter((x) => x.key === 'route')[0];
-  assert.strictEqual(app.default, 'auto'); assert.deepStrictEqual(app.aliases, { overlay: 'auto' });
+  assert.strictEqual(app.default, 'auto'); ['overlay', 'overlayMain', 'carlifeMain', 'carplay', 'alsa', 'direct'].forEach((k) => assert.strictEqual(app.aliases[k], 'auto', k));
   app.options.forEach((o) => assert.ok(CarRoute.setting(o[0]), o[0]));
 });
 
@@ -1265,7 +1311,7 @@ test('Ausgleich: Motorsound bleibt beim Drehen gleich laut; Ansagen zählen nich
     assert.strictEqual(r.compDb(), -3, 'lauter gedreht: sofort gegengeregelt');
     am.vol = 20; await tick(400); assert.strictEqual(r.compDb(), -3, 'großer Sprung: erst nach einer Weile');
     await tick(CarRoute.COMP_STABLE_MS + 400); assert.strictEqual(r.compDb(), 5);
-    am.vol = 0; await tick(CarRoute.COMP_STABLE_MS + 400); assert.strictEqual(r.compDb(), 12, 'nach oben begrenzt');
+    am.vol = 0; await tick(CarRoute.COMP_STABLE_MS + 400); assert.strictEqual(r.compDb(), 14, 'nach oben begrenzt');
     am.vol = 25; await tick(CarRoute.COMP_STABLE_MS + 400);
     // Navi-Ansage: das Auto zeigt deren Lautstärke
     am.conns.push({ mainConnectionID: 8, sourceID: 285, sinkID: 1024, connectionState: 2 }); am.vol = 21;
@@ -1279,50 +1325,63 @@ test('Ausgleich: Motorsound bleibt beim Drehen gleich laut; Ansagen zählen nich
   } finally { setClock(realNow); }
 });
 
-test('Ausgleich im Dienst: Pegel ändert sich weich, läuft nie über', () => {
-  const g = new E.OutGain(), n = 240;
-  const block = (a) => { const f = new Float32Array(n * 2); for (let i = 0; i < n; i++) f[2 * i] = f[2 * i + 1] = a; return f; };
-  let f = block(0.5); g.run(f, n, 24000); assert.ok(f.every((v) => v === 0.5), 'ohne Ausgleich unverändert');
-  g.set(-6, 1); let last = 0.5;
-  for (let k = 0; k < 60; k++) { f = block(0.5); g.run(f, n, 24000); for (let i = 0; i < n; i++) { assert.ok(Math.abs(f[2 * i] - last) < 0.01, 'Sprung'); last = f[2 * i]; } }
-  assert.ok(Math.abs(last - 0.5 * Math.pow(10, -0.3)) < 0.002);
-  g.set(12, 1); let top = 0;
-  for (let k = 0; k < 100; k++) { f = block(0.6); g.run(f, n, 24000); for (const v of f) top = Math.max(top, v); }
-  assert.ok(top <= 0.97, 'Spitze ' + top);
-  g.set(0, E.MIX_BASE); for (let k = 0; k < 200; k++) { f = block(0.6); g.run(f, n, 24000); }
-  assert.ok(Math.abs(f[f.length - 1] - 0.6 * E.MIX_BASE) < 0.002, 'danach wieder normal');
-  g.set(NaN, 1); assert.strictEqual(g.want, 1);
+test('Abgleich: Nachstellen gilt bei dieser Lautstärke, dazwischen Linien; bleibt gespeichert', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iconix-cal-'));
+  const { signals } = fakeAm();
+  const r = new CarRoute(signals, quiet, dir);
+  r.setComp(1); assert.ok(!r.calAdjust(1), 'ohne bekannte Lautstärke nichts tun');
+  r._setVol(25); r.calStart(); assert.strictEqual(r.compDb(), 0);
+  r._setVol(35); r.calAdjust(1); r.calAdjust(1); r.calAdjust(-0.5);
+  assert.strictEqual(r.compDb(), -10 + 1.5);
+  r._setVol(30); assert.strictEqual(r.compDb(), -5 + 0.75, 'dazwischen');
+  r._setVol(25); assert.strictEqual(r.compDb(), 0, 'der Anfang bleibt');
+  r._setVol(39); assert.strictEqual(r.compDb(), -14 + 1.5, 'außerhalb wie am Rand');
+  r._setVol(36); r.calAdjust(2); assert.deepStrictEqual(Object.keys(r.curve), ['25', '36'], 'Nachbarpunkt ersetzt');
+  const r2 = new CarRoute(signals, quiet, dir); r2.setComp(1); r2._setVol(36);
+  assert.strictEqual(r2.compDb(), r.compDb(), 'nach Neustart noch da');
+  r2.setComp(1.3); assert.deepStrictEqual(r2.curve, {}, 'andere Stärke: neuer Abgleich');
+  fs.writeFileSync(path.join(dir, 'iconix_volume.json'), '{"points":{"a":1,"30":"x","31":99,"32":2}}');
+  assert.deepStrictEqual(new CarRoute(signals, quiet, dir).curve, { 32: 2 }, 'kaputte Werte fallen weg');
+  r.resetCurve(); assert.deepStrictEqual(r.curve, {});
 });
 
-test('Verstärker direkt (Versuch): Liste der Verbindungen lesen, Erfolg und Ablehnung', async () => {
-  const rec = (id, s, sn, k, kn, st) => Buffer.concat([Buffer.from([id, 0, s & 255, s >> 8]), Buffer.from(sn + '\0'), Buffer.from([k & 255, k >> 8]), Buffer.from(kn + '\0'), Buffer.from([st])]);
-  const raw = Buffer.concat([rec(1, 401, 'Media_Overlay_Converter_Source', 395, 'MGU_GW_1_SINK', 2), rec(2, 145, 'RAM_GW_4_SOURCE', 130, 'InputB_Main', 2)]);
-  const l = CarRoute.parseAv(raw, 2);
-  assert.deepStrictEqual(l[1], { id: 2, source: 145, sourceName: 'RAM_GW_4_SOURCE', sink: 130, sinkName: 'InputB_Main', state: 2 });
-  assert.ok(/401 Media_Overlay_Converter_Source->395/.test(CarRoute.avText(l)));
-  assert.throws(() => CarRoute.parseAv(null, 1));
-  const realTimeout = global.setTimeout;
-  for (const ok of [true, false]) {
+test('Ausgleich: Auto meldet Änderungen selbst -> sofort; fehlende Meldungen stören nicht', async () => {
+  const { am, signals } = fakeAm();
+  const subs = {};
+  signals.on = async (p, n, fn) => { if (n !== 'volumeChanged') throw new Error('not found'); subs[n] = fn; };
+  const r = new CarRoute(signals, quiet, null);
+  am.conns.push({ mainConnectionID: 7, sourceID: 266, sinkID: 1024, connectionState: 2 });
+  r.setComp(1); r.auto = true; r.want('mixCarplay', true); am.vol = 25; await r._knobTick();
+  assert.ok(subs.volumeChanged); am.vol = 27; subs.volumeChanged({ sinkID: 1, volume: 27 });
+  await new Promise((ok) => setTimeout(ok, 30));
+  assert.strictEqual(r.compDb(), -2); assert.strictEqual(r.volEvents, 1);
+});
+
+test('Lautstärkeknopf: ohne laufende Musik keine Pause des Motorsounds', async () => {
+  for (const [music, seen, pause] of [[null, true, false], [266, true, false], [266, false, true], [1, true, true]]) {
     const { am, signals } = fakeAm();
-    const call = signals.call;
-    signals.proxy = async (iface) => ({ iface });
-    signals.call = async (p, m, x) => {
-      if (m === 'StatusAvConnections') return { STAT_NUMBER_AV_CONNECTIONS_WERT: 2, STAT_AV_CONNECTION: raw };
-      if (m === 'connect' && x.sinkID === 130 && !(ok && x.sourceID === 401)) { am.calls.push('nein ' + x.sourceID); return { amError: 'E_NOT_POSSIBLE' }; }
-      return call(p, m, x);
-    };
     const r = new CarRoute(signals, quiet, null);
-    global.setTimeout = (fn, ms) => realTimeout(fn, Math.min(ms, 1));
-    try { r.want('direct', true); await r._step(); } finally { global.setTimeout = realTimeout; }
-    if (ok) {
-      assert.deepStrictEqual(am.conns.map((c) => c.sourceID + '->' + c.sinkID), ['401->130'], 'nur die direkte Verbindung bleibt');
-      assert.ok(r.audible());
-      r.want('direct', false); await r._step(); assert.strictEqual(am.conns.length, 0);
-    } else {
-      assert.strictEqual(am.conns.length, 0); assert.ok(/nicht erreichbar/.test(r.lastError));
-      const n = am.calls.length; r.nextTry = 0; await r._step(); assert.strictEqual(am.calls.length, n, 'nicht gleich wieder versuchen');
-    }
+    if (music) am.conns.push({ mainConnectionID: 7, sourceID: music, sinkID: 1024, connectionState: 2 });
+    r.auto = true; r.mixSeen = seen;
+    r.want('overlay', true); await r._step(); await r._pollDuck(); await r._knobTick(); r.knobQuiet = 0;
+    am.vol = 23; await r._knobTick();
+    assert.strictEqual(r.knobHeld(), pause, 'Musikquelle ' + music + ', Musikstrom beobachtet ' + seen);
   }
+});
+
+test('Tonweg: Auto wirft die Verbindung immer gleich wieder weg -> seltener versuchen', async () => {
+  const { am, signals } = fakeAm({ state: 1 });
+  const r = new CarRoute(signals, quiet, null);
+  const realNow = setClock(null); let t = realNow(); setClock(() => t);
+  try {
+    r.want('overlay', true);
+    for (let i = 0; i < 240; i++) { t += 500; if (i % 6 === 5) am.conns = []; await r._step(); await new Promise((ok) => setImmediate(ok)); }
+    const n = am.calls.filter((c) => /^connect/.test(c)).length;
+    assert.ok(n >= 4 && n <= 14, 'Versuche in 2 min: ' + n);
+    am.conns = []; r.conn = null; r.nextTry = 0;
+    const f = fakeAm(); const r2 = new CarRoute(f.signals, quiet, null); r2.want('overlay', true); await r2._step(); r2._changed();
+    f.am.conns = []; await r2._pollDuck(); assert.strictEqual(r2.nextTry, 0, 'war hörbar: sofort neu verbinden');
+  } finally { setClock(realNow); }
 });
 
 (async () => {

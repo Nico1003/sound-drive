@@ -99,7 +99,7 @@ def run(payload, stall_reads):
             pcm.advance(timeout)
             return [], [], []
         return r, [], []
-    sys.modules['select'] = types.SimpleNamespace(select=fake_select)
+    ap.select = types.SimpleNamespace(select=fake_select)
 
     with tempfile.TemporaryFile() as f:
         f.write(payload)
@@ -198,6 +198,20 @@ def test_mix():
             ok = worst <= 32768 and lo > 20000 and duck == m.DUCK_MIN and m.duck > 0.97 and m.lim == 1.0
             check(ok, 'laut + laut begrenzt (Spitze %d, Musik bis %.2f), danach %.2f' % (worst, duck, m.duck))
             r.close()
+    for fast in ([False] if slow else [True, False]):
+        keep = ap.audioop
+        ap.audioop = keep if fast else None
+        g = ap.Gain(24000, 2)
+        src = array.array('h', [12000, -6000] * 2400).tobytes()
+        same = g.run(src) == src
+        g.want = 0.5
+        a = array.array('h', g.run(src))
+        steps = max(abs(a[i] - a[i - 2]) for i in range(2, len(a)))
+        g.want = 4.0
+        b = array.array('h', g.run(src))
+        ap.audioop = keep
+        ok = same and abs(a[-2] - 6000) <= 8 and abs(a[600] - 6000) < 500 and steps < 2500 and max(map(abs, b)) <= 32767 and abs(b[-2] - 31000) < 300
+        check(ok, 'Pegel weich und schnell, begrenzt%s (%d, größter Schritt %d, Spitze %d)' % ('' if fast else ', ohne audioop', a[-2], steps, max(map(abs, b))))
     if not hasattr(os, 'set_blocking') or sys.platform == 'win32':
         print('     (Schleife: nur unter Linux)')
         return fails
@@ -211,8 +225,12 @@ def test_mix():
     f = open(path, 'r+b')
     mm = mmap.mmap(f.fileno(), 0)
     mv = memoryview(mm)[1024:1024 + 8192].cast('h')
+    ctl_r, ctl_w = os.pipe()
+    while ctl_w <= 3 or ctl_r <= 3:        # 3 wird im Kind ersetzt
+        ctl_r, ctl_w = os.dup(ctl_r), os.dup(ctl_w)
     p = subprocess.Popen([sys.executable, os.path.join(ROOT, 'tools', 'iconix-audiod', 'alsa_play.py'), 'mix', 'T', '24000'],
-                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=dict(os.environ, ICONIX_SHM_DIR=tmp))
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=dict(os.environ, ICONIX_SHM_DIR=tmp, ICONIX_CTL='1'),
+                         close_fds=False, preexec_fn=lambda: os.dup2(ctl_r, 3))
     played, heard, stop = [0], [], [False]
     threading.Thread(target=lambda: [played.__setitem__(0, int(x.split()[1])) for x in p.stdout], daemon=True).start()
 
@@ -248,13 +266,19 @@ def test_mix():
             sent += due
         time.sleep(0.01)
     n = len(heard)
+    n0 = len(heard)
+    # leiser stellen, während der Ton schon im Vorlauf wartet: wirkt sofort
+    os.write(ctl_w, b'G 0.5\n')
+    time.sleep(0.45)
+    check(abs(heard[-1] - 5000) <= 12 or abs(heard[-1] - 4000) <= 2, 'Pegel vom Dienst wirkt (%d)' % heard[-1])
+    n = len(heard)
     p.stdin.close()
     time.sleep(1.3)
     stop[0] = True
     th.join()
     rc = p.wait(3)
     err = p.stderr.read().decode()
-    mid = heard[n // 3:n - 1200]
+    mid = heard[n0 // 3:n0 - 200]
     check(rc == 0 and 'mischt in T' in err and n > 8000, 'Schleife läuft und endet sauber (Code %s)' % rc)
     good = sum(1 for v in mid if abs(v - 6000) <= 3)
     check(good >= len(mid) * 0.98, 'Musik + Motor durchgehend (%d von %d)' % (good, len(mid)))

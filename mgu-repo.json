@@ -15,7 +15,6 @@
       "shared": [
         "kit/runtime",
         "kit/platform",
-        "kit/localization",
         "kit/tools/build.py",
         "kit/tools/pack_data.py",
         "kit/tools/localize.py",

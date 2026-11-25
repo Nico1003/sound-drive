@@ -21,9 +21,6 @@ RestartSec=3
 Slice=standard.slice
 # Echtzeit-Priorität für den Player (alsa_play.py setzt SCHED_RR selbst): erlauben, auch falls nicht als root
 LimitRTPRIO=10
-# Eigenes Abspielkommando oder ALSA-Gerät hier setzen, falls die automatische Suche nicht passt:
-# Environment=ICONIX_DEVICE=default
-# Environment=ICONIX_PLAYER=aplay -q -t raw -f S16_LE -r {rate} -c 2 -
 
 [Install]
 WantedBy=oapcontroller.service

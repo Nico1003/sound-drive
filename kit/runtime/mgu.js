@@ -675,6 +675,8 @@ async function runInner(impl) {
         settingsRow(row) { if (row && row.label) settingsRows.push(row); },
         /** Show a sheet (sheet.js) over the page; false where it can't be (software path, other renderers). */
         sheet(sh) { return display.openSheet(sh); },
+        /** yieldToHmi(ms): the HMI's own things (its volume bar) show over the page for that long; false where it can't. */
+        yieldToHmi(ms) { return display.yieldToHmi(ms); },
         /** hideButton(id): leave bar button id out where the kit runs the screen (its job is on the page there). */
         hideButton(id) { display.hideButton(id); },
         /**

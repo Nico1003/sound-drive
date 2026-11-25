@@ -65,15 +65,14 @@
     out.push({ key: 'vol-', act: 'vol', arg: -1, x: VX, y: BOTTOM - VB, w: VOLW, h: VB, r: 8 });
     return out;
   }
-  // Diagnose-Ansicht: Geräte testen / Weiter / Schließen
+  // Diagnose-Ansicht: Übersicht (Karten) oder technische Zeilen
   var DIAG_LINES = 12;   // 126 + 11 * 27 = 423: über den Knöpfen (458)
-  function hitsDiag(wide) {
+  function hitsDiag(wide, details) {
     if (wide !== undefined) setWide(wide);
-    return [
-      { key: 'diag-devtest', act: 'diagDevTest', arg: null, x: X1 - 640, y: 458, w: 220, h: 46, r: 6 },
-      { key: 'diag-next', act: 'diagNext', arg: null, x: X1 - 408, y: 458, w: 190, h: 46, r: 6 },
-      { key: 'diag-close', act: 'diagClose', arg: null, x: X1 - 206, y: 458, w: 206, h: 46, r: 6 }
-    ];
+    var out = [{ key: 'diag-mode', act: 'diagMode', arg: null, x: X0, y: 458, w: 220, h: 46, r: 6 }];
+    if (details) out.push({ key: 'diag-next', act: 'diagNext', arg: null, x: X1 - 408, y: 458, w: 190, h: 46, r: 6 });
+    out.push({ key: 'diag-close', act: 'diagClose', arg: null, x: X1 - 206, y: 458, w: 206, h: 46, r: 6 });
+    return out;
   }
   // Regler der Lautstärke (zwischen [+] und [−]): Bahn von T0 (100 %) bis T1 (0 %)
   var T0 = CHIP_Y + VB + 70, T1 = BOTTOM - VB - 20;
@@ -87,7 +86,7 @@
     return Math.max(0, Math.min(1, (T1 - y) / (T1 - T0)));
   }
   function hitAt(profiles, x, y, diag, wide) {
-    var h = diag ? hitsDiag(!!wide) : hits(profiles, !!wide);
+    var h = diag ? hitsDiag(!!wide, !!diag.details) : hits(profiles, !!wide);
     for (var i = 0; i < h.length; i++) if (x >= h[i].x && x <= h[i].x + h[i].w && y >= h[i].y && y <= h[i].y + h[i].h) return h[i];
     return null;
   }
@@ -101,7 +100,6 @@
   // Untertitel eines Profils (Bauart)
   function kindOf(p) {
     if (!p) return '';
-    if (p.kind === 'electric') return 'Elektro';
     var n = p.layout ? p.layout.length : 0;
     var v = { v8: 'V8', v10: 'V10', v12: 'V12', boxer: 'Boxer · 4 Zylinder', boxer6: 'Boxer · 6 Zylinder' }[p.id];
     return v || (n ? n + ' Zylinder' : '');
@@ -178,6 +176,7 @@
     g.line(cxv, yTop + VB / 2 - 14, cxv, yTop + VB / 2 + 14, 3.5, C.text);
     tile(g, vx, yBot - VB, VOLW, VB, 8, C.panel, C.edge);                  // [−]
     g.line(cxv - 14, yBot - VB / 2, cxv + 14, yBot - VB / 2, 3.5, C.text);
+    if (s.cal) { drawCal(g, s.cal, cxv, yTop); return; }
     g.text('Lautstärke', cxv, yTop + VB + 24, 15, C.dim, 'center', 'light');
     g.text(s.enabled ? pct(s.volume) : 'Stumm', cxv, yTop + VB + 50, 24, s.enabled ? C.text : C.warn, 'center', 'light');
     var t0 = T0, t1 = T1;                                                  // Regler von unten (0) nach oben (100 %)
@@ -185,6 +184,22 @@
     var v = Math.max(0, Math.min(1, s.volume)), ky = t1 - (t1 - t0) * v;
     if (v > 0.01) g.rrect(cxv - 3, ky, 6, t1 - ky, 3, s.enabled ? C.accent : C.faint);
     g.rrect(cxv - 12, ky - 12, 24, 24, 12, s.enabled ? '#ffffff' : C.dim);
+  }
+
+  // Abgleich der Auto-Lautstärke: statt des Reglers die Korrektur bei der jetzigen Auto-Lautstärke
+  function drawCal(g, k, cx, y) {
+    g.text('Abgleich', cx, y + VB + 26, 18, C.warn, 'center', 'light');
+    if (k.off || k.vol === null || k.vol === undefined) {
+      g.text(k.off ? 'Ausgleich' : 'warte auf', cx, y + VB + 66, 16, C.dim, 'center', 'light');
+      g.text(k.off ? 'ist aus' : 'Auto', cx, y + VB + 88, 16, C.dim, 'center', 'light');
+      return;
+    }
+    g.text('Auto', cx, y + VB + 64, 16, C.dim, 'center', 'light');
+    g.text(String(k.vol), cx, y + VB + 104, 36, C.text, 'center', 'light');
+    g.text((k.db > 0 ? '+' : '') + String(Math.round(k.db * 2) / 2).replace('.', ',') + ' dB', cx, y + VB + 150, 24, C.accent2, 'center', 'light');
+    g.text('+/- bis der', cx, y + VB + 184, 14, C.dim, 'center', 'light');
+    g.text('Motor gleich', cx, y + VB + 202, 14, C.dim, 'center', 'light');
+    g.text('laut klingt', cx, y + VB + 220, 14, C.dim, 'center', 'light');
   }
 
   // Drehzahlmesser wie im Kombiinstrument: Skala mit Strichen und Ziffern, roter Bereich, blauer Bogen
@@ -216,26 +231,58 @@
     g.text('km/h', cx, cy + 54, 22, C.dim, 'center', 'light');
   }
 
-  // s.diag = { lines: [...], page: 0 }
+  var LIGHT = { ok: C.ok, wait: C.warn, bad: C.crit };
+
+  // s.diag = { model: diagnose.build(...), details: bool, lines: [...], page: 0 }
   function drawDiag(g, s) {
-    var d = s.diag, pages = Math.max(1, Math.ceil(d.lines.length / DIAG_LINES));
-    var page = ((d.page || 0) % pages + pages) % pages;
+    var d = s.diag, b = hitsDiag(undefined, d.details), i;
     tile(g, X0 - 20, 46, X1 - X0 + 40, 468, 8, C.panel, C.edge);
     g.text('Audio-Diagnose', X0, 84, 28, C.text, 'left', 'light');
     g.line(X0, 98, X1, 98, 1.5, C.edge);
     g.line(X0, 98, X0 + 96, 98, 3, C.accent);
+    if (d.details) drawDiagLines(g, s, d); else drawDiagCards(g, s, d.model);
+    for (i = 0; i < b.length; i++) {
+      var q = b[i], label = q.act === 'diagMode' ? (d.details ? 'Zur Übersicht' : 'Technische Details') : q.act === 'diagNext' ? 'Weiter' : 'Schließen';
+      if (q.act === 'diagClose') g.rrect(q.x, q.y, q.w, q.h, q.r, C.accent); else tile(g, q.x, q.y, q.w, q.h, q.r, C.bg2, C.edge);
+      g.text(label, q.x + q.w / 2, q.y + 32, 21, q.act === 'diagClose' ? '#ffffff' : C.text, 'center', q.act === 'diagClose' ? false : 'light');
+    }
+  }
+
+  // Übersicht: ein Satz zum Gesamtzustand, darunter sechs Karten (Ampelpunkt, Titel, Zustand, Tipp)
+  function drawDiagCards(g, s, m) {
+    var w = (X1 - X0 - 16) / 2, h = 92, y0 = 154, max = s.wide ? 50 : 28, i;
+    g.rrect(X0, 110, X1 - X0, 36, 6, LIGHT[m.state]);
+    g.rrect(X0 + 1.5, 111.5, X1 - X0 - 3, 33, 5, C.bg2);
+    g.rrect(X0 + 14, 122, 12, 12, 6, LIGHT[m.state]);
+    g.text(cut(m.text, s.wide ? 103 : 60), X0 + 38, 135, 20, C.text, 'left', 'light');
+    for (i = 0; i < m.cards.length; i++) {
+      var c = m.cards[i], x = X0 + (i % 2) * (w + 16), y = y0 + Math.floor(i / 2) * (h + 8);
+      tile(g, x, y, w, h, 8, C.bg2, C.edge);
+      g.rrect(x, y + 12, 4, h - 24, 2, LIGHT[c.state]);
+      g.text(c.title, x + 18, y + 26, 17, C.dim, 'left', 'light');
+      var v = wrapWords(c.value, max), tip = wrapWords(c.hint, s.wide ? 62 : 35);
+      g.text(v[0] || '', x + 18, y + 52, 20, C.text, 'left', 'light');
+      if (v[1]) g.text(cut(v.slice(1).join(' '), max), x + 18, y + 76, 20, C.text, 'left', 'light');
+      else if (tip[0]) g.text(cut(tip.join(' '), s.wide ? 62 : 35), x + 18, y + 76, 16, c.state === 'ok' ? C.faint : LIGHT[c.state], 'left', 'light');
+    }
+  }
+
+  function drawDiagLines(g, s, d) {
+    var pages = Math.max(1, Math.ceil(d.lines.length / DIAG_LINES));
+    var page = ((d.page || 0) % pages + pages) % pages;
     g.text('Seite ' + (page + 1) + '/' + pages, X1, 84, 20, C.dim, 'right', 'light');
-    var ls = d.lines.slice(page * DIAG_LINES, page * DIAG_LINES + DIAG_LINES);
-    var maxL = s.wide ? 102 : 66;   // passend zum Umbruch in main.js (100 bzw. 64 Zeichen)
-    ls = ls.map(function (l) { return l.length > maxL ? l.slice(0, maxL - 1) + '…' : l; });
-    for (var i = 0; i < ls.length; i++) g.text(ls[i], X0, 126 + i * 27, 19, i === 0 && page === 0 ? C.text : C.dim, 'left', 'light');
-    var b = hitsDiag();
-    tile(g, b[0].x, b[0].y, b[0].w, b[0].h, b[0].r, C.bg2, C.edge);
-    g.text('Geräte testen', b[0].x + b[0].w / 2, b[0].y + 32, 21, C.warn, 'center', 'light');
-    tile(g, b[1].x, b[1].y, b[1].w, b[1].h, b[1].r, C.bg2, C.edge);
-    g.text('Weiter', b[1].x + b[1].w / 2, b[1].y + 32, 21, C.text, 'center', 'light');
-    g.rrect(b[2].x, b[2].y, b[2].w, b[2].h, b[2].r, C.accent);
-    g.text('Schließen', b[2].x + b[2].w / 2, b[2].y + 32, 21, '#ffffff', 'center', false);
+    var ls = d.lines.slice(page * DIAG_LINES, page * DIAG_LINES + DIAG_LINES), maxL = s.wide ? 102 : 66;   // passend zum Umbruch in main.js
+    for (var i = 0; i < ls.length; i++) g.text(cut(ls[i], maxL), X0, 126 + i * 27, 19, C.dim, 'left', 'light');
+  }
+
+  function cut(t, n) { t = String(t || ''); return t.length > n ? t.slice(0, n - 1) + '…' : t; }
+  function wrapWords(t, n) {
+    var out = [], line = '';
+    String(t || '').split(' ').forEach(function (w) {
+      if (line && line.length + 1 + w.length > n) { out.push(line); line = w; } else line = line ? line + ' ' + w : w;
+    });
+    if (line) out.push(line);
+    return out;
   }
 
   return { W: W, H: H, colors: C, draw: draw, hits: hits, hitsDiag: hitsDiag, hitAt: hitAt, volAt: volAt, DIAG_LINES: DIAG_LINES, X1_NARROW: X1_NARROW, X1_WIDE: X1_WIDE };

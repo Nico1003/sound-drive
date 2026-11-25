@@ -5,8 +5,8 @@
  *   node kit/tools/test_daemon.js
  *
  * Der Dienst läuft in einem Temp-Ordner mit einem Python-Ersatz für alsa_play.py (spielt in Echtzeit ab, meldet
- * Frames). Geprüft: startet schnell und ohne ALSA-Scan (der bremste das Hochfahren), meldet Status, nimmt
- * Einstellungen und Fahrzeugdaten an, spielt, Testsound, Diagnose (startet erst dann den Scan), kaputte Nachrichten
+ * Frames). Geprüft: startet schnell, meldet Status, nimmt
+ * Einstellungen und Fahrzeugdaten an, spielt, Testsound, Diagnose, kaputte Nachrichten
  * stören nicht, beendet sich sauber.
  */
 const fs = require('fs');
@@ -20,9 +20,8 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sd-daemon-'));
 ['iconix-audiod.js', 'engine.js', 'synth.js', 'profiles.js'].forEach((f) => fs.copyFileSync(path.join(ROOT, 'tools/iconix-audiod', f), path.join(dir, f)));
 fs.writeFileSync(path.join(dir, 'alsa_play.py'), `
 import os, sys, time, json
-if sys.argv[1] == 'list':
-    open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scan.marker'), 'w').write('scan')
-    print(json.dumps({'devices': [{'name': 'default', 'desc': '', 'ok': True, 'silent': False, 'error': None}]}))
+if sys.argv[1] == 'rings':
+    print(json.dumps({'rings': [{'bar': 'smartx', 'name': 'CarPlayMain', 'period': 1024, 'periods': 3, 'ch': 2, 'fmt': 'h', 'alive': True, 'min': 1024, 'max': 3072}]}))
     sys.exit(0)
 dev, rate, buf_us, ch = sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5])
 fb = 2 * ch
@@ -103,7 +102,6 @@ async function connect() {
   await sleep(300);
   ok(statuses.length > 0 && statuses[0].version, 'Status beim Verbinden (Version ' + (statuses[0] || {}).version + ')');
   await sleep(2500);
-  ok(!fs.existsSync(path.join(dir, 'scan.marker')), 'kein ALSA-Scan beim Start (bremste das Hochfahren)');
   ok(fs.existsSync(statusFile), 'Statusdatei geschrieben');
 
   send({ op: 'hello', id: 'test', version: '1' });
@@ -111,15 +109,13 @@ async function connect() {
   send({ op: 'config', cfg: { profile: 'turbo5', volume: 0.6, enabled: true, device: 'smartx:Media_Overlay_Converter_Source_CF_24_MONO' } });
   const feed = setInterval(() => send({ op: 'params', rpm: 2200, load: 0.4, speed: 70, overrun: false }), 40);
   await sleep(1500);
-  ok(last().playing && last().profile === 'turbo5', 'spielt nach Einstellungen und Fahrzeugdaten (' + last().backend + ', playing ' + last().playing + ', Profil ' + last().profile + ')');
+  ok(last().playing && last().profile === 'turbo5', 'spielt nach Einstellungen und Fahrzeugdaten (' + last().device + ', playing ' + last().playing + ', Profil ' + last().profile + ')');
   ok(last().outRate === 24000 && last().rt === 'ja', 'Overlay-Format 24 kHz, Player mit Echtzeit');
   clearInterval(feed);
 
   send({ op: 'diag' });
   await sleep(2500);
-  ok(diags.length > 0 && diags[0].lines.some((l) => /SmartX/.test(l)), 'Diagnose antwortet');
-  ok(fs.existsSync(path.join(dir, 'scan.marker')), 'ALSA-Scan erst mit der Diagnose');
-  ok(Array.isArray(last().scan) && last().scan.length === 1, 'Scan-Ergebnis im Status');
+  ok(diags.length > 0 && /^SmartX-Kanäle/.test(diags[0].lines[0]) && /CarPlayMain 3x1024 2ch h LÄUFT/.test(diags[0].lines[1]), 'Diagnose antwortet: ' + (diags[0] || {}).lines);
 
   send({ op: 'test' });
   await sleep(1000);

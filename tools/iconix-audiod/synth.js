@@ -126,30 +126,24 @@
   function prepare(p) {
     if (p._prep) return p._prep;
     var r = { n: 0 };
-    if (p.kind === 'electric') {
-      var n = Math.min(p.voices.length, 8), ord = new Float64Array(n), amp = new Float64Array(n), det = new Float64Array(n), sum = p.sub || 0;
-      for (var i = 0; i < n; i++) { ord[i] = p.voices[i][0]; amp[i] = p.voices[i][1]; det[i] = p.voices[i][2] || 0; sum += amp[i]; }
-      r = { n: n, ord: ord, amp: amp, det: det, norm: sum > 0 ? 1 / sum : 1 };
-    } else {
-      // Zündereignisse: Winkel (Anteil am 720°-Zyklus) aufsteigend, Bank, fester Charakter je Zylinder
-      var ev = p.layout.map(function (e, k) { return { a: (e[0] % 720) / 720, bank: e[1] ? 1 : 0, k: k }; })
-        .sort(function (x, y) { return x.a - y.a; });
-      var N = ev.length;
-      r.n = N;
-      r.ang = new Float64Array(N); r.bank = new Int8Array(N);
-      r.trim = new Float64Array(N); r.uAmp = new Float64Array(N); r.uTime = new Float64Array(N); r.hdr = new Float64Array(N);
-      var mean = 0, k2;
-      for (k2 = 0; k2 < N; k2++) {
-        r.ang[k2] = ev[k2].a; r.bank[k2] = ev[k2].bank;
-        r.trim[k2] = 1 + hash(k2, 1) * 0.03;            // ±3 % fest
-        r.uAmp[k2] = hash(k2, 2); r.uTime[k2] = hash(k2, 3);
-        r.hdr[k2] = hash(k2, 4) * (p.headerSpread || 0); // ungleiche Krümmerlängen (m)
-        mean += r.uAmp[k2];
-      }
-      mean /= N;
-      for (k2 = 0; k2 < N; k2++) r.uAmp[k2] -= mean;   // ohne Gleichanteil: verschiebt nur die Balance
-      r.cylVol = (p.displacement || 3) / N;
+    // Zündereignisse: Winkel (Anteil am 720°-Zyklus) aufsteigend, Bank, fester Charakter je Zylinder
+    var ev = p.layout.map(function (e, k) { return { a: (e[0] % 720) / 720, bank: e[1] ? 1 : 0, k: k }; })
+      .sort(function (x, y) { return x.a - y.a; });
+    var N = ev.length;
+    r.n = N;
+    r.ang = new Float64Array(N); r.bank = new Int8Array(N);
+    r.trim = new Float64Array(N); r.uAmp = new Float64Array(N); r.uTime = new Float64Array(N); r.hdr = new Float64Array(N);
+    var mean = 0, k2;
+    for (k2 = 0; k2 < N; k2++) {
+      r.ang[k2] = ev[k2].a; r.bank[k2] = ev[k2].bank;
+      r.trim[k2] = 1 + hash(k2, 1) * 0.03;            // ±3 % fest
+      r.uAmp[k2] = hash(k2, 2); r.uTime[k2] = hash(k2, 3);
+      r.hdr[k2] = hash(k2, 4) * (p.headerSpread || 0); // ungleiche Krümmerlängen (m)
+      mean += r.uAmp[k2];
     }
+    mean /= N;
+    for (k2 = 0; k2 < N; k2++) r.uAmp[k2] -= mean;   // ohne Gleichanteil: verschiebt nur die Balance
+    r.cylVol = (p.displacement || 3) / N;
     p._prep = r;
     return r;
   }
@@ -194,8 +188,7 @@
 
     // Filter
     this.fMuff = new Biquad(); this.fCabin = new Biquad(); this.fCabin2 = new Biquad(); this.fBoom = new Biquad();
-    this.fGuard = new Biquad(); this.fGuard2 = new Biquad(); this.fDc = new Biquad();
-    this.fElec = new Biquad(); this.fElec2 = new Biquad();
+    this.fGuard = new Biquad(); this.fDc = new Biquad();
     this.fBass = new Biquad();
     this.fGuard.set('lp', 6500, 0.71, sr); // nach dem Innenraum-Tiefpass reicht 2. Ordnung
     this.fDc.set('hp', 24, 0.7, sr);
@@ -215,22 +208,18 @@
     this._setBoom();
     this.fCabin.set('lp', p.cabinHz || 2600, 0.6, sr); this.aggCab = 0; // Fahrmodus-Anpassung setzt die Regelung neu
     this.fCabin2.set('peak', 1100, 0.9, sr, p.midDb || 0);
-    if (p.kind !== 'electric') {
-      var P = this.prep;
-      this.dH0 = Math.max(2, 2 * (p.headerM || 0.75) * sr / C_EXH);
-      this.dH1 = Math.max(2, 2 * (p.headerM || 0.75) * (p.headerRatio || 1.07) * sr / C_EXH);
-      this.dPipe = 2 * (p.pipeM || 3) * sr / C_EXH;
-      this.dCham = 2 * (p.chamberM || 0.38) * sr / C_EXH;
-      this.kHdrLp = onePole(3200, sr); this.kPipeLp = onePole(p.pipeLp || 2200, sr); this.kChamLp = onePole(3500, sr);
-      this.kRadLp = onePole(2000, sr); this.kNz = onePole(2000, sr);
-      this.kVib = onePole(p.vibHz || 120, sr);
-      this.bark = p.bark != null ? p.bark : 0.8; this.exMix = p.exhaust != null ? p.exhaust : 0.6; this.vibMix = p.vib != null ? p.vib : 1.5;
-      // Krümmerverzögerung je Zylinder in Samples (ungleiche Längen)
-      this.hdrWait = new Int32Array(P.n);
-      for (var i = 0; i < P.n; i++) this.hdrWait[i] = Math.max(0, Math.round(P.hdr[i] / C_EXH * sr));
-    } else {
-      this.fElec2.set('lp', 3000, 0.7, sr);
-    }
+    var P = this.prep;
+    this.dH0 = Math.max(2, 2 * (p.headerM || 0.75) * sr / C_EXH);
+    this.dH1 = Math.max(2, 2 * (p.headerM || 0.75) * (p.headerRatio || 1.07) * sr / C_EXH);
+    this.dPipe = 2 * (p.pipeM || 3) * sr / C_EXH;
+    this.dCham = 2 * (p.chamberM || 0.38) * sr / C_EXH;
+    this.kHdrLp = onePole(3200, sr); this.kPipeLp = onePole(p.pipeLp || 2200, sr); this.kChamLp = onePole(3500, sr);
+    this.kRadLp = onePole(2000, sr); this.kNz = onePole(2000, sr);
+    this.kVib = onePole(p.vibHz || 120, sr);
+    this.bark = p.bark != null ? p.bark : 0.8; this.exMix = p.exhaust != null ? p.exhaust : 0.6; this.vibMix = p.vib != null ? p.vib : 1.5;
+    // Krümmerverzögerung je Zylinder in Samples (ungleiche Längen)
+    this.hdrWait = new Int32Array(P.n);
+    for (var i = 0; i < P.n; i++) this.hdrWait[i] = Math.max(0, Math.round(P.hdr[i] / C_EXH * sr));
   };
 
   /** Dröhn-Anhebung des Profils und Einstellung "Bass" (dB). */
@@ -250,13 +239,9 @@
     this.hLp0 = 0; this.hLp1 = 0; this.pLp = 0; this.pLp2 = 0; this.cLp = 0; this.radLp = 0; this.yPrev = 0;
     this.nz1 = 0; this.nz2 = 0;
     this.cycVar = 0; this.bump = 0; this.vib1 = 0; this.vib2 = 0; this.combS = 0.2;
-    this.wob = 0; this.wobT = 0;
     this.fBass.reset();
-    var fl = [this.fMuff, this.fCabin, this.fCabin2, this.fBoom, this.fGuard, this.fGuard2, this.fDc,
-      this.fElec, this.fElec2];
+    var fl = [this.fMuff, this.fCabin, this.fCabin2, this.fBoom, this.fGuard, this.fDc];
     for (var i = 0; i < fl.length; i++) fl[i].reset();
-    this.ePh = new Float64Array(8); this.eInc = new Float64Array(8); this.eW = new Float64Array(8); this.eN = 0;
-    this.subPh = 0; this.subInc = 0; this.subW = 0; this.lfoPh = 0; this.eLevel = 0;
   };
 
   Synth.prototype.rand = function () {
@@ -293,7 +278,7 @@
     if (!p) return;
     var r = finite(+p.rpm, -1);
     // Motorstart: Motor stand mindestens 0,3 s (unter 150 U/min), jetzt dreht er -> Startsound
-    if (r >= 300 && this.offTime >= 0.3 && this.cfg.startSound && this.profile && this.profile.kind !== 'electric') this.startT = 0;
+    if (r >= 300 && this.offTime >= 0.3 && this.cfg.startSound) this.startT = 0;
     if (r >= 0 && r < 150) { if (this.offTime < 0) this.offTime = 0; } else if (r >= 150) this.offTime = -1;
     var nr = clamp(finite(+p.rpm, this.target.rpm), 0, 12000);
     if (nr !== this.target.rpm) {
@@ -359,7 +344,7 @@
     var cg = (this.cEnv > COMP_T ? Math.pow(COMP_T / this.cEnv, COMP_EXP) : 1) * COMP_MAKEUP;
     this.comp += (cg - this.comp) * (cg < this.comp ? 0.5 : this.kCompUp);
     if (this.offTime >= 0) this.offTime += CR / sr;
-    var rpmT = p.kind === 'electric' ? 0 : this._virtualRpm(this._rpmNow()), loadT = this.target.load;
+    var rpmT = this._virtualRpm(this._rpmNow()), loadT = this.target.load;
     if (this.startT >= 0) {
       var st = this.startT, idle = p.idleRpm;
       if (st < START_CRANK) { rpmT = 230 + 50 * Math.sin(st * 40); loadT = 0.12; }            // Starter dreht
@@ -373,11 +358,11 @@
     this.speed += (this.target.speed - this.speed) * this.kS;
     this.gain += (tgtGain - this.gain) * (tgtGain < this.gain ? this.kGd : this.kG); // ausblenden schneller als einblenden
     this.vol += (tgtVol - this.vol) * this.kV;
-    var xr = p.kind === 'electric' ? 0 : clamp(this.rpm / p.maxRpm, 0, 1);
+    var xr = clamp(this.rpm / p.maxRpm, 0, 1);
     var spd = clamp((this.speed - SPD_FROM) / (SPD_FULL - SPD_FROM), 0, 1), spdG = Math.pow(10, c.speedVol / 20) - 1;
     // Motor springt an (Drehzahl aus Stille): ~80 ms einblenden – der Kompressor steht nach Stille auf voller
     // Verstärkung und misst den Pegel währenddessen schon mit, sonst käme der erste Zündimpuls als Knall durch
-    this.runG += ((p.kind === 'electric' || this.rpm > 30 ? 1 : 0) - this.runG) * this.kRun;
+    this.runG += ((this.rpm > 30 ? 1 : 0) - this.runG) * this.kRun;
     var newAmp = this.gain * this.vol * HEADROOM * this.comp * this.runG * (1 + RPM_LIFT * xr * Math.sqrt(xr)) * (1 + spdG * smooth(spd));
     // Begrenzer: zu laute Stellen als Ganzes leiser stellen, statt die Wellen abzuschneiden (das klingt rau, wie Kratzen).
     // Über LIM_FROM wächst die Spitze nur noch mit LIM_SLOPE: Lautes bleibt lauter als Leises (Last/Schub, Sport/Comfort).
@@ -385,7 +370,7 @@
     if (pk > LIM_FROM) newAmp = (LIM_FROM + (pk - LIM_FROM) * LIM_SLOPE) / this.pkEnv;
     if (newAmp < 1e-5 && tgtGain === 0) newAmp = 0;
     this.ampStep = (newAmp - this.amp) / CR;
-    if (p.kind === 'electric') this._controlElec(); else this._controlComb();
+    this._controlComb();
   };
 
   Synth.prototype._controlComb = function () {
@@ -402,7 +387,6 @@
     if (Math.abs(cabF - this.aggCab) > 15) { this.aggCab = cabF; this.fCabin.set('lp', cabF, 0.6, sr); }
     this.exMixEff = this.exMix * (0.55 + 0.45 * bk);
     var x = clamp(rpm / p.maxRpm, 0, 1.1);
-    this.x = x;
     // Kurbelwinkel je Sample (Anteil am 720°-Zyklus), Leerlauf-Ungleichförmigkeit
     this.dph = rpm > 30 ? rpm / 120 / sr : 0;
     this.rip = 0.05 * clamp(Math.pow(p.idleRpm / Math.max(rpm, 1), 2), 0, 1) * (p.idleRip || 1);
@@ -443,22 +427,6 @@
     this.fMuff.set('lp', (p.mufflerHz || 1200) * (1 + 0.3 * agg) * open * (0.75 + 0.5 * effLoad * inten + 0.15 * Math.min(x, 1) * (1 - effLoad)) * (0.85 + 0.3 * Math.min(x, 1)), p.mufflerQ || 0.7, sr);
   };
 
-  Synth.prototype._controlElec = function () {
-    var p = this.profile, P = this.prep, sr = this.sr, spd = this.speed, load = this.load;
-    var f = p.baseHz * Math.pow(2, spd / p.octaveKmh);
-    this.eN = P.n;
-    for (var i = 0; i < P.n; i++) {
-      var dt = f * P.ord[i] * (1 + P.det[i]) / sr;
-      if (dt > 0.2) { this.eN = i; break; }
-      this.eInc[i] = dt; this.eW[i] = P.amp[i] * P.norm;
-    }
-    this.subInc = f * 0.5 / sr; this.subW = (p.sub || 0) * P.norm;
-    this.fElec.set('lp', clamp(p.cutoff * (0.4 + 0.8 * load * this.cfg.intensity) + spd * p.cutoffPerKmh, 120, 2600), 0.9, sr);
-    this.lfoPh += p.lfoHz * CR / sr; if (this.lfoPh >= 1) this.lfoPh -= Math.floor(this.lfoPh);
-    var lfo = 1 - p.lfoDepth * (0.5 + 0.5 * Math.sin(TWO_PI * this.lfoPh));
-    this.eLevel = (0.3 + 0.7 * load) * lfo * (this.target.overrun ? 0.7 : 1);
-  };
-
   // ---------------------------------------------------------------------------
   // Zündung: einen Impuls in den Pool legen
   // ---------------------------------------------------------------------------
@@ -492,7 +460,7 @@
     var dH0 = this.dH0, dH1 = this.dH1, dPipe = this.dPipe, dCham = this.dCham;
     var kH = this.kHdrLp, kP = this.kPipeLp, kC = this.kChamLp, kRad = this.kRadLp, kNz = this.kNz;
     var hdrFb = this.hdrFb, pipeFb = this.pipeFb, chamFb = this.chamFb;
-    var fMuff = this.fMuff, fBoom = this.fBoom, fCab = this.fCabin, fCab2 = this.fCabin2, fG = this.fGuard, fG2 = this.fGuard2, fDc = this.fDc;
+    var fMuff = this.fMuff, fBoom = this.fBoom, fCab = this.fCabin, fCab2 = this.fCabin2, fG = this.fGuard, fDc = this.fDc;
     var useMid = !!this.profile.midDb, useBass = this.useBass, fBass = this.fBass;
     var dph = this.dph, rip = this.rip, phase = this.phase, dist = this.dist, next = this.next;
     var unevT = this.unevW * 0.22 / Math.max(N, 1), uTime = P.uTime;
@@ -585,41 +553,6 @@
   // ---------------------------------------------------------------------------
   // Audio-Schleife Elektro (PolyBLEP-Sägezähne + Sub-Sinus, danach dieselbe Innenraum-Kette)
   // ---------------------------------------------------------------------------
-  Synth.prototype._blockElec = function (out, off, n) {
-    var ph = this.ePh, inc = this.eInc, w = this.eW, V = this.eN;
-    var sPh = this.subPh, sInc = this.subInc, sW = this.subW, level = this.eLevel;
-    var useBass = this.useBass, fBass = this.fBass;
-    var fE = this.fElec, fE2 = this.fElec2, fBoom = this.fBoom, fCab = this.fCabin, fG = this.fGuard, fG2 = this.fGuard2, fDc = this.fDc;
-    var amp = this.amp, ampStep = this.ampStep, drive = this.drive, dn = this.driveNorm;
-    var peak = 0, pre = 0, bad = false, k, j, x, dt, t, saw, sum, s, y, a, o = off * 2;
-    for (k = 0; k < n; k++) {
-      sum = 0;
-      for (j = 0; j < V; j++) {
-        dt = inc[j]; x = ph[j] + dt; if (x >= 1) x -= 1; ph[j] = x;
-        saw = 2 * x - 1;
-        if (x < dt) { t = x / dt; saw -= t + t - t * t - 1; }
-        else if (x > 1 - dt) { t = (x - 1) / dt; saw -= t * t + t + t + 1; }
-        sum += w[j] * saw;
-      }
-      sPh += sInc; if (sPh >= 1) sPh -= 1;
-      sum += sW * Math.sin(TWO_PI * sPh);
-      s = fE2.run(fE.run(sum)) * level;
-      s = fDc.run(s); s = fBoom.run(s); s = fCab.run(s);
-      y = s * drive; s = y / (1 + (y < 0 ? -y : y)) * dn;
-      s = fG.run(s);
-      if (useBass) s = fBass.run(s);
-      a = s < 0 ? -s : s; if (a > pre) pre = a;
-      amp += ampStep; s *= amp;
-      if (s !== s) { s = 0; bad = true; } else if (s > 0.8 || s < -0.8) s = softLimit(s);
-      out[o++] = s; out[o++] = s;
-      a = s < 0 ? -s : s; if (a > peak) peak = a;
-    }
-    this.subPh = sPh; this.amp = amp;
-    if (pre > this.prePk) this.prePk = pre;
-    if (bad) this._reset();
-    return peak;
-  };
-
   /** Füllt `out` (Float32Array, Stereo interleaved) mit Samples in [-1, 1]; gibt den Spitzenwert zurück. */
   Synth.prototype.render = function (out, frames) {
     var peak = 0, i = 0, n, pk;
@@ -629,16 +562,12 @@
       if (this.amp === 0 && this.ampStep === 0) {
         for (var z = i * 2, end = (i + n) * 2; z < end; z++) out[z] = 0;
       } else {
-        pk = this.profile.kind === 'electric' ? this._blockElec(out, i, n) : this._blockComb(out, i, n);
+        pk = this._blockComb(out, i, n);
         if (pk > peak) peak = pk;
       }
       i += n; this.cnt -= n;
     }
     return peak;
-  };
-
-  Synth.prototype.state = function () {
-    return { profile: this.cfg.profile, rpm: this.rpm, load: this.load, speed: this.speed, gain: this.gain, enabled: this.cfg.enabled };
   };
 
   Synth.Biquad = Biquad;

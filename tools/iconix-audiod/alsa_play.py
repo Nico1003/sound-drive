@@ -6,23 +6,21 @@ Das Head Unit hat libasound und Python 3.12 (mgu-python), aber kein aplay. Diese
 
   alsa_play.py play <gerät> <rate> [puffer_us] [kanäle]
                                      liest S16LE (Stereo oder Mono) von stdin und spielt es auf <gerät> ab
-  alsa_play.py list [namen...]       gibt JSON aus: alle ALSA-PCM-Namen (+ zusätzliche) und ob sie sich öffnen lassen
   alsa_play.py mix <Kanal> [rate]    mischt S16LE Stereo von stdin in den Musikstrom eines SmartX-Kanals (z. B. CarPlay)
   alsa_play.py rings                 gibt JSON aus: die Ringpuffer der SmartX-/AVB-Kanäle
-  alsa_play.py tone <gerät> [sek]    spielt einen Testton (440 Hz) – zum Ausprobieren von Hand
 
 Ausgaben auf stderr in Zeilen wie aplay (z. B. "underrun!!!"), damit engine.js sie zählt.
-Kanonische Quelle: shared/alsa_play.py – Kopie im Tool erzeugt `npm run sync`.
 """
 import array
 import ctypes
 import ctypes.util
 import json
-import math
 import mmap
 import operator
 import os
 import re
+import select
+import signal
 import struct
 import sys
 import time
@@ -36,12 +34,10 @@ except ImportError:
     audioop = None
 
 SND_PCM_STREAM_PLAYBACK = 0
-SND_PCM_NONBLOCK = 1
 SND_PCM_FORMAT_S16_LE = 2
 SND_PCM_ACCESS_RW_INTERLEAVED = 3
 EPIPE = 32
 ESTRPIPE = 86
-EAGAIN = 11
 SND_PCM_STATE_PREPARED = 2
 
 
@@ -70,17 +66,11 @@ def load_alsa():
     lib.snd_pcm_writei.restype = ctypes.c_long
     lib.snd_pcm_writei.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong]
     lib.snd_pcm_recover.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
-    lib.snd_pcm_drain.argtypes = [ctypes.c_void_p]
     lib.snd_pcm_close.argtypes = [ctypes.c_void_p]
-    lib.snd_pcm_nonblock.argtypes = [ctypes.c_void_p, ctypes.c_int]
     lib.snd_pcm_delay.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_long)]
     lib.snd_pcm_state.argtypes = [ctypes.c_void_p]
     lib.snd_pcm_start.argtypes = [ctypes.c_void_p]
     lib.snd_pcm_get_params.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong), ctypes.POINTER(ctypes.c_ulong)]
-    lib.snd_device_name_hint.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))]
-    lib.snd_device_name_get_hint.restype = ctypes.c_void_p
-    lib.snd_device_name_get_hint.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-    lib.snd_device_name_free_hint.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
     return lib
 
 
@@ -113,9 +103,9 @@ def smartx_lock(dev):
         sys.stderr.flush()
 
 
-def open_pcm(lib, dev, rate, latency_us, nonblock=False, channels=2):
+def open_pcm(lib, dev, rate, latency_us, channels=2):
     h = ctypes.c_void_p()
-    r = lib.snd_pcm_open(ctypes.byref(h), dev.encode(), SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK if nonblock else 0)
+    r = lib.snd_pcm_open(ctypes.byref(h), dev.encode(), SND_PCM_STREAM_PLAYBACK, 0)
     if r < 0:
         return None, 'open: ' + err(lib, r)
     r = lib.snd_pcm_set_params(h, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED, int(channels), int(rate), 1, int(latency_us))
@@ -123,54 +113,6 @@ def open_pcm(lib, dev, rate, latency_us, nonblock=False, channels=2):
         lib.snd_pcm_close(h)
         return None, 'set_params: ' + err(lib, r)
     return h, None
-
-
-def hint_names(lib):
-    out = []
-    hints = ctypes.POINTER(ctypes.c_void_p)()
-    if lib.snd_device_name_hint(-1, b'pcm', ctypes.byref(hints)) < 0:
-        return out
-    libc = ctypes.CDLL(None)
-    libc.free.argtypes = [ctypes.c_void_p]
-    i = 0
-    while hints[i]:
-        def get(key):
-            p = lib.snd_device_name_get_hint(hints[i], key)
-            if not p:
-                return None
-            s = ctypes.cast(p, ctypes.c_char_p).value.decode('utf-8', 'replace')
-            libc.free(p)
-            return s
-        name, desc, io = get(b'NAME'), get(b'DESC'), get(b'IOID')
-        if name and io != 'Input':
-            out.append({'name': name, 'desc': (desc or '').replace('\n', ' ')[:80]})
-        i += 1
-    lib.snd_device_name_free_hint(hints)
-    return out
-
-
-def cmd_list(extra=None):
-    lib = load_alsa()
-    names = hint_names(lib)
-    seen = set(n['name'] for n in names)
-    # Namen aus BMWs ALSA-Konfiguration (vom Dienst gefunden) mit testen
-    for extra_name in (extra or []):
-        if extra_name not in seen:
-            names.append({'name': extra_name, 'desc': 'aus Konfiguration'})
-            seen.add(extra_name)
-    # die direkten Geräte der Soundkarte und übliche Namen immer mit testen
-    for extra in ['default', 'plughw:0,0', 'plughw:0,1', 'hw:0,0', 'hw:0,1', 'sysdefault', 'dmix']:
-        if extra not in seen:
-            names.append({'name': extra, 'desc': ''})
-            seen.add(extra)
-    res = []
-    for n in names[:80]:
-        h, e = open_pcm(lib, n['name'], 44100, 200000, nonblock=True)
-        if h:
-            lib.snd_pcm_close(h)
-        silent = n['name'] == 'null' or n['name'].startswith('null:')
-        res.append({'name': n['name'], 'desc': n['desc'], 'ok': h is not None, 'silent': silent, 'error': e})
-    print(json.dumps({'devices': res}))
 
 
 def realtime():
@@ -205,6 +147,20 @@ def realtime_parent():
             except Exception:
                 pass
         return 'nein (%s)' % (getattr(e, 'strerror', None) or e.__class__.__name__)
+
+
+def release_parent(rp, gain):
+    """Kein Ton mehr: Der Dienst läuft wieder wie jeder andere – außer ein anderer Player übernimmt gerade."""
+    gain.poll()
+    if rp == 'ja' and not gain.keep_rt:
+        try:
+            os.sched_setscheduler(os.getppid(), os.SCHED_OTHER, os.sched_param(0))
+        except Exception:
+            pass
+
+
+def on_sigterm(_sig, _frame):
+    raise KeyboardInterrupt()       # wie ein normales Ende: aufräumen statt sofort weg
 
 
 class Conceal:
@@ -274,6 +230,76 @@ class Conceal:
         return a.tobytes()
 
 
+class Gain:
+    """Ausgangspegel, vom Dienst über einen eigenen Kanal (fd 3, Zeilen "G <Faktor>") gestellt. Er wirkt erst hier, ganz am Ende:
+    Ton, der schon im Vorlauf wartet, bekommt den neuen Pegel auch. So bleibt der Motorsound beim Drehen am
+    Lautstärkeknopf gleich laut, statt dem Knopf um den Vorlauf hinterherzuhinken. Änderungen laufen über ~15 ms, und
+    was über TOP ginge, wird leiser geregelt statt abgeschnitten."""
+    TOP, PART = 31000.0, 64
+
+    def __init__(self, rate, channels):
+        self.ch = channels
+        self.step = min(1.0, self.PART / (rate * 0.005))
+        self.back = self.PART / (rate * 0.4)
+        self.g, self.want, self.lim = 1.0, 1.0, 1.0
+        self.buf = b''
+        self.fresh = True       # noch nichts gespielt: den ersten Pegel ohne Übergang nehmen
+        self.keep_rt = False    # gleich folgt ein anderer Player: dem Dienst die Echtzeit-Priorität lassen
+        self.fds = []
+        if os.environ.get('ICONIX_CTL') == '1':
+            try:
+                os.set_blocking(3, False)
+                self.fds = [3]
+            except Exception:
+                self.fds = []
+
+    def poll(self):
+        while self.fds:
+            try:
+                d = os.read(3, 4096)
+            except BlockingIOError:
+                return
+            except OSError:
+                d = b''
+            if not d:
+                self.fds = []
+                return
+            lines = (self.buf + d).split(b'\n')
+            self.buf = lines.pop()[-64:]
+            for x in lines:
+                if x == b'K':
+                    self.keep_rt = True
+                elif x[:2] == b'G ':
+                    try:
+                        v = float(x[2:])
+                    except ValueError:
+                        continue
+                    if 0.0 <= v <= 16.0:
+                        self.want = v
+
+    def run(self, data):
+        if self.fresh and data:
+            self.fresh, self.g = False, self.want
+        if not data or (self.g == 1.0 and self.want == 1.0 and self.lim == 1.0):
+            return data
+        n = self.PART * self.ch * 2
+        out = []
+        for i in range(0, len(data), n):
+            p = data[i:i + n]
+            peak = audioop.max(p, 2) if audioop is not None else max(map(abs, array.array('h', p)))
+            self.g += (self.want - self.g) * self.step
+            if abs(self.want - self.g) < 0.0005:
+                self.g = self.want
+            need = min(1.0, self.TOP / (peak * self.g)) if peak * self.g > self.TOP else 1.0
+            self.lim = need if need < self.lim else min(need, self.lim + self.back)
+            k = self.g * self.lim
+            if audioop is not None:
+                out.append(audioop.mul(p, 2, k))
+            else:
+                out.append(array.array('h', [int(v * k) for v in array.array('h', p)]).tobytes())
+        return b''.join(out)
+
+
 def cmd_play(dev, rate, latency_us=200000, channels=2):
     lib = load_alsa()
     smartx_lock(dev)
@@ -296,7 +322,6 @@ def cmd_play(dev, rate, latency_us=200000, channels=2):
     sys.stderr.flush()
     frame_bytes = 2 * channels
     chunk = 1024 * frame_bytes
-    stdin = sys.stdin.buffer
     pending = b''
     # Rückmeldung an engine.js: "P <gespielte Frames>" auf stdout. Damit schreibt der Dienst nur so viel vor,
     # wie wirklich fehlt – ohne sie staute sich Ton in der Pipe (bis ~1 s Verzögerung).
@@ -324,13 +349,10 @@ def cmd_play(dev, rate, latency_us=200000, channels=2):
     fill_n = max(1, rate * 10 // 1000)         # je 10 ms
     zeros = bytes(fill_n * frame_bytes)
     conceal = Conceal(rate, channels)
-    fd = stdin.fileno()
+    gain = Gain(rate, channels)
+    fd = sys.stdin.fileno()
     fills = 0
     stalled = False
-    try:
-        import select
-    except ImportError:
-        select = None
     # mit 20 ms Stille beginnen: SmartX hat dann sofort frische Daten statt alter Reste im Ringpuffer
     for _ in range(2):
         w = lib.snd_pcm_writei(h, zeros, fill_n)
@@ -339,10 +361,14 @@ def cmd_play(dev, rate, latency_us=200000, channels=2):
             own += w
     try:
         while True:
-            if select is not None and total > 0:
+            if total > 0:
                 d = delay.value if lib.snd_pcm_delay(h, ctypes.byref(delay)) >= 0 else 0
                 wait = max(0.002, (d - guard) / float(rate))
-                ready = select.select([fd], [], [], wait)[0]
+                ready = select.select([fd] + gain.fds, [], [], wait)[0]
+                if gain.fds and gain.fds[0] in ready:
+                    gain.poll()
+                    if fd not in ready:
+                        continue
                 if not ready:
                     r = lib.snd_pcm_delay(h, ctypes.byref(delay))
                     if r < 0:
@@ -350,7 +376,7 @@ def cmd_play(dev, rate, latency_us=200000, channels=2):
                         delay.value = 0
                     if delay.value < guard:
                         conceal.start()
-                        w = lib.snd_pcm_writei(h, conceal.fill(fill_n).tobytes(), fill_n)
+                        w = lib.snd_pcm_writei(h, gain.run(conceal.fill(fill_n).tobytes()), fill_n)
                         if w > 0:
                             total += w
                             own += w
@@ -366,18 +392,16 @@ def cmd_play(dev, rate, latency_us=200000, channels=2):
                         elif w < 0:
                             lib.snd_pcm_recover(h, int(w), 1)
                     continue
-                data = os.read(fd, chunk)
-            elif select is not None:
-                data = os.read(fd, chunk)      # nicht mit stdin.read1 mischen (dessen Puffer würde Bytes behalten)
-            else:
-                data = stdin.read1(chunk) if hasattr(stdin, 'read1') else stdin.read(chunk)
+            data = os.read(fd, chunk)
             if not data:
                 break
             stalled = False
             data = pending + data
             n = len(data) // frame_bytes
             pending = data[n * frame_bytes:]
-            buf = conceal.join(data[:n * frame_bytes])
+            raw = conceal.join(data[:n * frame_bytes])
+            gain.poll()
+            buf = gain.run(raw)
             off = 0
             while off < n:
                 w = lib.snd_pcm_writei(h, buf[off * frame_bytes:], n - off)
@@ -397,17 +421,12 @@ def cmd_play(dev, rate, latency_us=200000, channels=2):
                     continue
                 off += w
                 total += w
-            conceal.remember(buf)
+            conceal.remember(raw)
             report()
     except (BrokenPipeError, KeyboardInterrupt):
         pass
     finally:
-        if rp == 'ja':
-            # kein Ton mehr: der Dienst läuft wieder wie jeder andere
-            try:
-                os.sched_setscheduler(os.getppid(), os.SCHED_OTHER, os.sched_param(0))
-            except Exception:
-                pass
+        release_parent(rp, gain)
         lib.snd_pcm_close(h)
     return 0
 
@@ -673,7 +692,7 @@ def cmd_mix(channel, rate=24000):
     os.set_blocking(fd, False)
     # Datenstrom vom Dienst (24 kHz): queue ab qpos; done = davon verbrauchte Frames
     queue, qpos, done, eof = bytearray(), 0, 0, False
-    mixer, conceal = Mixer(ring), Conceal(rate, 2)
+    mixer, conceal, gain = Mixer(ring), Conceal(rate, 2), Gain(rate, 2)
     up = Upsample(mixer.GAIN)
     ready = bytearray()             # schon mit 48 kHz, noch nicht gemischt (höchstens ein paar Frames)
     wlast, moved, live = None, 0.0, False
@@ -709,7 +728,7 @@ def cmd_mix(channel, rate=24000):
                 sys.stderr.write('underrun!!! (Stille nachgelegt, #%d)\n' % fills)
                 sys.stderr.flush()
             stalled = True
-        return data
+        return gain.run(data)
 
     def frames48(n):
         """n Frames mit 48 kHz (S16LE Stereo)."""
@@ -726,6 +745,7 @@ def cmd_mix(channel, rate=24000):
     try:
         while True:
             # 1) was der Dienst geschickt hat
+            gain.poll()
             while not eof:
                 try:
                     d = os.read(fd, 65536)
@@ -813,11 +833,7 @@ def cmd_mix(channel, rate=24000):
     except KeyboardInterrupt:
         pass
     finally:
-        if rp == 'ja':
-            try:
-                os.sched_setscheduler(os.getppid(), os.SCHED_OTHER, os.sched_param(0))
-            except Exception:
-                pass
+        release_parent(rp, gain)
         ring.close()
     return 0
 
@@ -853,50 +869,23 @@ def cmd_rings():
     print(json.dumps({'rings': out}))
 
 
-def cmd_tone(dev, seconds=2.0):
-    lib = load_alsa()
-    rate = 44100
-    h, e = open_pcm(lib, dev, rate, 200000)
-    if not h:
-        print('Fehler: %s' % e)
-        return 2
-    frames = int(rate * seconds)
-    data = b''.join(struct.pack('<hh', int(8000 * math.sin(2 * math.pi * 440 * i / rate)),
-                                int(8000 * math.sin(2 * math.pi * 440 * i / rate))) for i in range(frames))
-    off = 0
-    while off < frames:
-        w = lib.snd_pcm_writei(h, data[off * 4:], frames - off)
-        if w < 0:
-            if lib.snd_pcm_recover(h, int(w), 1) < 0:
-                break
-            continue
-        off += w
-    lib.snd_pcm_drain(h)
-    lib.snd_pcm_close(h)
-    print('ok')
-    return 0
-
-
 if __name__ == '__main__':
     a = sys.argv[1:]
+    signal.signal(signal.SIGTERM, on_sigterm)
     try:
-        if a and a[0] == 'list':
-            cmd_list(a[1:])
-        elif len(a) >= 3 and a[0] == 'play':
+        if len(a) >= 3 and a[0] == 'play':
             sys.exit(cmd_play(a[1], int(a[2]), int(a[3]) if len(a) > 3 else 200000, int(a[4]) if len(a) > 4 else 2))
         elif len(a) >= 2 and a[0] == 'mix':
             sys.exit(cmd_mix(a[1], int(a[2]) if len(a) > 2 else 24000))
         elif a and a[0] == 'rings':
             cmd_rings()
-        elif len(a) >= 2 and a[0] == 'tone':
-            sys.exit(cmd_tone(a[1], float(a[2]) if len(a) > 2 else 2.0))
         else:
             sys.stderr.write(__doc__)
             sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(0)
     except OSError as e:
-        if a and a[0] == 'list':
-            print(json.dumps({'devices': [], 'error': str(e)}))
-        elif a and a[0] == 'rings':
+        if a and a[0] == 'rings':
             print(json.dumps({'rings': [], 'error': str(e)}))
         else:
             sys.stderr.write('alsa_play: %s\n' % e)

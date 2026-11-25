@@ -96,8 +96,8 @@ const feed = setInterval(() => {
 setTimeout(() => {
   // während der Fahrt
   const st = eng.status();
-  ok(st.playing && /smartx/.test(st.backend || ''), 'Ton läuft über den SmartX-Player (' + st.backend + ')');
-  ok(st.outRate === 24000 && st.outCh === 1, 'Format 24 kHz mono');
+  ok(st.playing && /^smartx:/.test(st.device || ''), 'Ton läuft über den SmartX-Player (' + st.device + ')');
+  ok(st.outRate === 24000, 'Format 24 kHz');
   ok(st.bufMs === 60, 'Puffergröße vom Player übernommen (' + st.bufMs + ' ms)');
   ok(st.rt === 'ja', 'Echtzeit-Meldung des Players übernommen (' + st.rt + ')');
 }, 5000);

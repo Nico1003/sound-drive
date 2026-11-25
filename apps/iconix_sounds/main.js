@@ -25,19 +25,21 @@ const UI = require('./ui');
 const AudioLink = require('./audio_link');
 const VehicleFeed = require('./vehicle_feed');
 const CarRoute = require('./car_route');
+const Diagnose = require('./diagnose');
 const Clock = require('./clock');
 
-const VERSION = '1.0.9';
+const VERSION = '1.1.0';
 // eigener Reiter "Sound" neben "Settings" im Kopf des Kits (führt aus den Einstellungen zurück)
 const TAB_INFO = { tabs: ['Sound'], sel: 0, badges: [] };
 // Audiomanager-Verbindung: Sie braucht im Auto ~6 s, bis sie hörbar ist (CS_CONNECTED). Darum wird sie schon beim
 // Aufwachen des Autos aufgebaut (erste Fahrzeugdaten) und gehalten, solange der Motor läuft oder kürzlich lief –
 // sonst fehlten bei jedem Motorstart und nach jeder Pause ein paar Sekunden Ton.
 const ROUTE_KEEP_MS = 120000;  // so lange nach dem letzten Lebenszeichen (Ton, laufender Motor, Aufwachen) halten
+const BMW_SHOW_MS = 2500;      // so lange bleibt BMWs Anzeige der Lautstärke nach dem letzten Dreh zu sehen
 const WAKE_GAP_MS = 300000;    // so lange ohne Fahrzeugdaten = das Auto hat geschlafen
 const DEFAULTS = {
   enabled: true, profile: Profiles.DEFAULT, volume: 80, intensity: 70, sport: false,
-  muteParked: false, duck: true, knobMusic: true, knobComp: 1, followMode: true, narrow: false, speedVol: 4, startSound: true, bassDb: 0, bark: 100, loadSource: 'auto', route: 'auto', alsaDevice: 'auto', maxTorque: 400, carIdle: 800, carRedline: 4800
+  muteParked: false, duck: true, knobMusic: true, knobComp: 1, followMode: true, narrow: false, speedVol: 4, startSound: true, bassDb: 0, bark: 100, loadSource: 'auto', route: 'auto', knobCal: 'off', bmwVolume: true, maxTorque: 400, carIdle: 800, carRedline: 4800
 };
 
 function setting(settings, key) {
@@ -92,24 +94,35 @@ function startCore(host) {
       bassDb: num(g('bassDb'), 0),
       barkPct: num(g('bark'), 100) / 100
     };
-    // Gerät für den Dienst: SmartX-Kanal des Tonwegs, bei "ALSA direkt" das frühere Ausgabegerät
+    // Gerät für den Dienst: SmartX-Kanal des Tonwegs
     const rt = CarRoute.route(effRoute);
     // der Dienst soll beobachten, ob in CarPlay / Android Auto gerade Musik läuft
     synthCfgCache.mixProbe = synthCfgCache.route === 'auto' ? CarRoute.MIX_CHANNELS : [];
-    synthCfgCache.device = rt.device || String(g('alsaDevice') || 'auto');
-    uiCfg = { muteParked: bool(g('muteParked')), duck: bool(g('duck')), wide: !bool(g('narrow')), knobMusic: bool(g('knobMusic')), knobComp: num(g('knobComp'), 1) };
+    synthCfgCache.device = rt.device;
+    synthCfgCache.steady = String(g('knobCal')) === 'on' && feed.speed() < 1;
+    uiCfg = { muteParked: bool(g('muteParked')), duck: bool(g('duck')), wide: !bool(g('narrow')), knobMusic: bool(g('knobMusic')), knobComp: num(g('knobComp'), 1), cal: String(g('knobCal')) };
   };
-  refresh();
 
   const link = new AudioLink(log, VERSION);
   const feed = new VehicleFeed(host.signals, log, () => feedCfg);
+  refresh();
   const synthCfg = () => synthCfgCache;
   let ducked = false, held = true;   // held: Kanal gerade nicht hörbar (noch nicht verbunden, weg, Knopf gedreht) -> leise
   let outDb = 0;             // Ausgleich des Lautstärkeknopfs (CarRoute.compDb)
   const pushCfg = () => {
     refresh(); synthCfgCache.outDb = outDb; synthCfgCache.duck = ducked; synthCfgCache.hold = held; link.configure(synthCfgCache);
-    if (core) { core.route.setDuck(uiCfg.duck); core.route.setKnob(uiCfg.knobMusic); core.route.setComp(uiCfg.knobComp); }
+    if (core) { core.route.setDuck(uiCfg.duck); core.route.setKnob(uiCfg.knobMusic); core.route.setComp(uiCfg.knobComp); calMode(); }
   };
+  // Abgleich der Lautstärke (Einstellung): gleichmäßiger Ton, +/− stellt den Motorsound bei der jetzigen Auto-Lautstärke nach
+  let calOn = false;
+  const setSetting = (k, v) => { try { settings.set(k, v); } catch (e) { log.warn('iconix: settings.set ' + k + ': ' + e.message); } };
+  const calMode = () => {
+    if (uiCfg.cal === 'reset') { core.route.resetCurve(); log.info('iconix: Abgleich zurückgesetzt'); uiCfg.cal = 'off'; setSetting('knobCal', 'off'); }
+    const on = uiCfg.cal === 'on';
+    if (on && !calOn) { calAnchor = false; lastActivity = Clock.now(); }
+    calOn = on;
+  };
+  let calAnchor = false;
   let lastActivity = 0, lastData = 0, pendingTest = 0;
 
   // Autostart nachvollziehen: wann nach dem Hochfahren des Head Units kam die App, die Drehzahl, der Tonweg, der Ton?
@@ -149,13 +162,18 @@ function startCore(host) {
   // hörbar oder nicht (verbindet noch, Verbindung weg, Lautstärkeknopf gedreht): Ton weich aus- bzw. einblenden
   route.onChange = audible => { if (switching || held === !audible) return; held = !audible; synthCfgCache.hold = held; link.configure(synthCfgCache); };
   setInterval(() => {
-    const ds = link.connected ? link.daemonStatus : (link.local ? link.localStatus : null);
+    const ds = link.connected ? link.daemonStatus : null;
     const now = Clock.now();
+    if (calOn) {
+      lastActivity = now;
+      if (!calAnchor && route.compVol !== null) { calAnchor = true; route.calStart(); }
+      // losgefahren: Abgleich beenden
+      if (feed.speed() > 3) { uiCfg.cal = 'off'; setSetting('knobCal', 'off'); pushCfg(); }
+    }
     if (link.connected) mark('daemon', 'Audio-Dienst verbunden');
     if (route.audible()) mark('route', 'Tonweg hörbar');
     if (ds && ds.playing) mark('play', 'Ton läuft' + (ds.openMs > 3000 ? ' (Kanal öffnete erst nach ' + Math.round(ds.openMs / 1000) + ' s)' : ''));
     if (ds && (ds.wants || ds.playing || ds.opening) && last && last.rpm > 100) lastActivity = now;
-    if (ds && ds.devTest) lastActivity = now;
     const next = route.pick(synthCfgCache.route, ds && ds.mix, ds && ds.device === CarRoute.route(effRoute).device ? ds.error : null);
     // Wechsel des Wegs: erst ausblenden, dann umschalten
     if (next !== effRoute && !switching) {
@@ -180,6 +198,8 @@ function startCore(host) {
   // am Knopf gedreht: Motorsound sofort gegenregeln, damit er gleich laut bleibt
   route.onComp = db => { if (db === outDb) return; outDb = db; synthCfgCache.outDb = db; link.configure(synthCfgCache); };
   route.setComp(uiCfg.knobComp);
+  // ein vergessener Abgleich läuft nach einem Neustart nicht weiter
+  if (uiCfg.cal !== 'off') { setSetting('knobCal', 'off'); pushCfg(); }
   route.start();
   // die Plattform beendet die App (Update, Abschalten): Tonweg sauber freigeben
   if (host.app && typeof host.app.on === 'function') host.app.on('shutdown', () => { route.stop(); });
@@ -196,8 +216,11 @@ function startCore(host) {
     if (v == null && prev === num(setting(settings, 'volume'), 80)) return;
     pushCfg();
   };
-  core = { link, feed, route, pushCfg, synthCfg, test, previewVolume, ui: () => uiCfg, log, last: () => last, speed: () => feed.speed(),
-    startInfo: () => 'Autostart: ' + marks.map(x => x.text + ' ' + x.up + ' s').join(' · ') + ' (nach dem Hochfahren)' };
+  const cal = () => (calOn ? { vol: route.compVol, db: route.compVol === null ? 0 : route.curveAt(route.compVol), off: !uiCfg.knobComp } : null);
+  core = { link, feed, route, pushCfg, cal, calAdjust: d => route.calAdjust(d), synthCfg, test, previewVolume, ui: () => uiCfg, last: () => last, speed: () => feed.speed(),
+    marks,
+    diag: () => Diagnose.build({ connected: link.connected, waiting: link.waiting(), why: link.why(), ds: link.connected ? link.daemonStatus : null, version: VERSION, outdated: outdated(link),
+      rpm: last ? last.rpm : null, rpmAge: last ? Clock.now() - last.at : 0, speed: feed.speed(), enabled: bool(setting(settings, 'enabled')), volume: synthCfgCache.volume, route: route.info(), marks }) };
   return core;
 }
 
@@ -248,21 +271,22 @@ function olderVersion(a, b) {
   return false;
 }
 
-// Statuszeile: Dienst + Tonweg; neues Objekt nur, wenn sich etwas ändert
+/** Tool älter als die App (nur die App aktualisiert)? Neue Sounds kennt der Dienst dann nicht – darauf hinweisen. */
+function outdated(link) {
+  const ds = link.connected ? link.daemonStatus : null;
+  return ds && ds.version && olderVersion(String(ds.version), VERSION) ? String(ds.version) : '';
+}
+
+// Statuszeile: Tonweg und Dienst; neues Objekt nur, wenn sich etwas ändert
 let audioCache = { key: '', val: null };
 function audioStatus(c) {
-  const a = c.link.status, r = c.route.short();
-  // Tool älter als die App (nur die App aktualisiert): neue Sounds kennt der Dienst dann nicht und spielt still den
-  // Standard-Sound – darauf hinweisen statt es unbemerkt zu lassen
-  const ds = c.link.connected ? c.link.daemonStatus : null;
-  const old = ds && ds.version && olderVersion(String(ds.version), VERSION) ? ds.version : '';
-  const key = a.text + '|' + a.ok + '|' + r + '|' + old;
+  const l = c.link, ds = l.connected ? l.daemonStatus : null, r = c.route.short(), old = outdated(l);
+  const svc = !l.connected ? (l.waiting() ? 'verbinde …' : l.why()) : !ds ? 'verbunden' : ds.error ? ds.error : ds.opening ? 'öffnet Kanal' : ds.playing ? 'spielt' : 'bereit';
+  const ok = l.connected && !(ds && ds.error) && (!c.route.needsAm() || /^(verbunden|aus|Pause)/.test(c.route.state));
+  const key = svc + '|' + ok + '|' + r + '|' + old;
   if (key !== audioCache.key) {
-    const routeOk = !c.route.needsAm() || c.route.state === 'verbunden' || c.route.state === 'aus' || c.route.state.indexOf('Pause') === 0;
-    // langen Kanalnamen kürzen ("alsa:plug:smartx:Media_Overlay_…_CF_24_MONO" -> "SmartX")
-    const dev = a.text.replace(/^Audio: /, '').replace(/alsa:(plug:)?smartx:[^ ·]+/, 'SmartX').replace(/mix:[^ ·]+/, 'Musik-Mix');
     audioCache = { key, val: old ? { ok: false, text: 'Sound Drive Audio ' + old + ' veraltet – bitte auf ' + VERSION + ' aktualisieren' }
-      : { ok: a.ok && routeOk, text: r + ' · ' + dev } };
+      : !l.connected ? { ok: false, text: 'Audio-Dienst: ' + svc } : { ok, text: r + ' · ' + svc } };
   }
   return audioCache.val;
 }
@@ -305,6 +329,7 @@ mgu.run({
 
     const nextProfile = () => set('profile', Profiles.next(String(get('profile')), 1));
     const changeVolume = steps => {
+      if (c.cal()) { c.calAdjust(steps); return; }
       const v = Math.max(0, Math.min(100, Math.round((num(get('volume'), 80) + steps * 5) / 5) * 5));
       set('volume', v);
     };
@@ -317,33 +342,34 @@ mgu.run({
     if (ctx.hideButton) ctx.hideButton('BTN_PROFILE');
     ctx.ui.onClick('BTN_MUTE', () => set('enabled', !bool(get('enabled'))));
     ctx.ui.onClick('BTN_TEST', () => c.test());
-    // Audio-Diagnose: zeigt, welche Tonwege es auf diesem Head Unit gibt (an-/ausschalten)
-    // Oben der Tonweg (Audiomanager: Verbindungen, Quellen, Senken – kommt asynchron), darunter Dienst und App.
-    let diag = null, routeLines = ['--- Tonweg (Audiomanager) ---', '(wird abgefragt ...)'];
-    // breite Ansicht: längere Zeilen (die Diagnose-Kachel ist dann ~1100 px breit)
-    const diagText = linkLines => wrapLines([c.startInfo()].concat(routeLines, linkLines), c.ui().wide ? 100 : 64);
+    // Audio-Diagnose (an/aus): Übersicht in klaren Worten, auf Wunsch die technischen Zeilen (Audiomanager und Dienst, kommen
+    // asynchron; sie stehen auch im QR-Log)
+    let diag = null, routeLines = [];
+    const diagText = () => wrapLines(['Start: ' + c.marks.map(x => x.text + ' ' + x.up + ' s').join(' · ') + ' (nach dem Hochfahren)'].concat(routeLines.length ? routeLines : ['(Audiomanager wird abgefragt …)'],
+      c.link.daemonDiag || ['(Dienst wird abgefragt …)']), c.ui().wide ? 100 : 64);
+    const refreshDiag = d => { if (diag === d) d.lines = diagText(); };
     const openDiag = () => {
-      const d = diag = { linkLines: c.link.diagnose(), page: 0 };
-      d.lines = diagText(d.linkLines);
-      c.route.diagLines().then(l => { routeLines = l; if (diag === d) d.lines = diagText(d.linkLines); },
-        e => { routeLines = ['Tonweg-Diagnose: ' + e]; });
+      const d = diag = { model: c.diag(), at: Clock.now(), details: false, lines: [], page: 0 };
+      d.lines = diagText();
+      c.link.diagnose();
+      c.route.diagLines().then(l => { routeLines = l; refreshDiag(d); }, e => { routeLines = ['Audiomanager: ' + e]; refreshDiag(d); });
     };
     ctx.ui.onClick('BTN_DIAG', () => { if (diag) diag = null; else openDiag(); });
-    // Antwort des Dienstes (root) nachreichen
-    c.link.on('diag', () => { if (diag) { diag.linkLines = c.link.diagnose(false); diag.lines = diagText(diag.linkLines); } });
+    c.link.on('diag', () => refreshDiag(diag));
 
     // Bedienbare Flächen (Profil-Chips, Lautstärke −/+, Stumm) – Geometrie aus ui.js
     const act = h => {
       if (h.act === 'profile') set('profile', h.arg);
       else if (h.act === 'vol') changeVolume(h.arg);
       else if (h.act === 'mute') set('enabled', !bool(get('enabled')));
+      else if (h.act === 'diagMode' && diag) { diag.details = !diag.details; diag.page = 0; }
       else if (h.act === 'diagNext' && diag) diag.page++;
       else if (h.act === 'diagClose') diag = null;
-      else if (h.act === 'diagDevTest') c.link.testDevices();
     };
     // Touch-Ziele je Ansicht (schmal: Seitenfenster frei, breit: ganze Seite)
     const mkHits = wide => ({ main: UI.hits(Profiles.list, wide).map(h => Object.assign({ run: () => act(h) }, h)),
-      diag: UI.hitsDiag(wide).map(h => Object.assign({ run: () => act(h) }, h)) });
+      diag: UI.hitsDiag(wide, false).map(h => Object.assign({ run: () => act(h) }, h)),
+      details: UI.hitsDiag(wide, true).map(h => Object.assign({ run: () => act(h) }, h)) });
     const HITS_BY = { narrow: mkHits(false), wide: mkHits(true) };
 
     // Zwei Betriebsarten des Kits (kit/runtime/display.js):
@@ -377,7 +403,7 @@ mgu.run({
       ctx.onTouch((phase, x, y) => {
         if (phase === 1) {
           if (volDrag) endDrag();
-          if (diag) return false;
+          if (diag || c.cal()) return false;
           const f = UI.volAt(x, y, c.ui().wide);
           if (f < 0) return false;
           volDrag = { t: Clock.now(), f, timer: null };
@@ -393,11 +419,15 @@ mgu.run({
         return true;
       });
     }
+    // BMWs eigene Anzeige der Lautstärke liegt sonst unter unserer Seite: beim Drehen kurz Platz machen
+    c.route.page = true;
+    if (ctx.ui.onVisible) ctx.ui.onVisible((name, on) => { if (name === 'MAIN') c.route.page = !!on; });
+    c.route.onTurn = () => { if (ctx.yieldToHmi && bool(get('bmwVolume')) && !c.cal() && c.route.page) ctx.yieldToHmi(BMW_SHOW_MS); };
     if (ctx.onTap) {
       ctx.onTap((x, y) => {
-        const h = UI.hitAt(Profiles.list, x, y, !!diag, c.ui().wide);
+        const h = UI.hitAt(Profiles.list, x, y, diag, c.ui().wide);
         if (h) { act(h); return; }
-        const f = diag ? -1 : UI.volAt(x, y, c.ui().wide);
+        const f = diag || c.cal() ? -1 : UI.volAt(x, y, c.ui().wide);
         if (f >= 0) setVolFrac(f);
       });
     }
@@ -412,12 +442,14 @@ mgu.run({
     const st = { profiles: Profiles.list };
     let lastKey = '', lastDraw = 0;
     ctx.loop('MAIN', 20, () => {
+      if (ctx.display && ctx.display.yielding) return undefined;      // BMWs Anzeige ist zu sehen: das Bild steht
       const s = c.last();
       const cfg = c.synthCfg();
-      const a = audioStatus(c), now = Clock.now();
+      const a = audioStatus(c), now = Clock.now(), k = c.cal();
+      if (diag && now - diag.at >= 500) { const m = c.diag(); if (JSON.stringify(m) !== JSON.stringify(diag.model)) { diag.model = m; diag.at = now; } }
       const key = cfg.profile + '|' + cfg.enabled + '|' + cfg.volume + '|' + cfg.sport + '|' + cfg.mode + '|' + c.ui().wide + '|' + cfg.carRedline + '|' +
         (s ? Math.round(s.rpm / 10) : '-') + '|' + Math.round(c.speed()) + '|' + a.text + '|' + a.ok + '|' +
-        (diag ? diag.page + ':' + diag.lines.length : '');
+        (diag ? diag.details + ':' + diag.page + ':' + diag.lines.length + ':' + diag.at : '') + (k ? '|' + k.vol + '|' + k.db + '|' + k.off : '');
       if (now - lastDraw < 33 || (key === lastKey && now - lastDraw < 1000)) return undefined;
       lastKey = key; lastDraw = now;
       const cv = ctx.canvas(UI.W, UI.H);
@@ -432,12 +464,12 @@ mgu.run({
       st.rpm = s ? s.rpm : 0; st.speed = c.speed();
       st.redline = cfg.carRedline; st.volume = cfg.volume; st.enabled = cfg.enabled;
       st.sport = cfg.sport; st.demo = !s; st.mode = cfg.mode; st.wide = c.ui().wide; st.own = own;
-      st.audio = a;
+      st.audio = a; st.cal = k;
       st.diag = diag;
       UI.draw(g, st);
       // Ziele nach dem Zeichnen registrieren (wie apps/dyno, live_data: nur wenn cv.own)
       if (own && typeof cv.target === 'function') {
-        const hb = HITS_BY[c.ui().wide ? 'wide' : 'narrow'], list = diag ? hb.diag : hb.main;
+        const hb = HITS_BY[c.ui().wide ? 'wide' : 'narrow'], list = diag ? (diag.details ? hb.details : hb.diag) : hb.main;
         for (let i = 0; i < list.length; i++) { const h = list[i]; cv.target(h.x, h.y, h.w, h.h, h.run, h.key, h.r); }
       }
       return ctx.ui.image('MAIN_GFX', cv);

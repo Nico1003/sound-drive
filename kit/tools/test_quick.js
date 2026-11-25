@@ -18,9 +18,7 @@ const JOBS = ['test_iconix_route.js', 'test_autostart.js', 'test_alsa_play.py']
   .concat(full ? ['test_iconix_chaos.js', 'test_engine_e2e.js', 'test_daemon.js', 'iconix_popscan.js', 'iconix_soak.js'] : []);
 
 let bad = 0;
-['synth.js', 'engine.js', 'profiles.js'].forEach((f) => {
-  if (!fs.readFileSync(path.join(ROOT, 'tools/iconix-audiod', f)).equals(fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds', f)))) { bad++; console.log('FAIL ' + f + ': Dienst und App verschieden'); }
-});
+if (!fs.readFileSync(path.join(ROOT, 'tools/iconix-audiod/profiles.js')).equals(fs.readFileSync(path.join(ROOT, 'apps/iconix_sounds/profiles.js')))) { bad++; console.log('FAIL profiles.js: Dienst und App verschieden'); }
 
 function run(job, py) {
   return new Promise((done) => {

@@ -26,9 +26,8 @@ jobs:
           python-version: '3.12'   # wie mgu-python auf dem Head Unit
       - name: Python-Dateien kompilieren (Tippfehler = kein Ton im Auto)
         run: python3 -m py_compile tools/iconix-audiod/alsa_play.py kit/tools/build.py
-      - name: App-Kopien von Synth, Engine und Profilen entsprechen dem Tool
-        run: |
-          for f in synth.js engine.js profiles.js; do cmp tools/iconix-audiod/$f apps/iconix_sounds/$f; done
+      - name: Sound-Profile in App und Tool gleich
+        run: cmp tools/iconix-audiod/profiles.js apps/iconix_sounds/profiles.js
       - run: node kit/tools/test_runtime.js
       - run: node kit/tools/test_drive_coach.js
       - run: node kit/tools/test_iconix_route.js

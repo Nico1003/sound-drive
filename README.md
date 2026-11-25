@@ -80,24 +80,31 @@ Konstantfahrt, Teillast):
 - **Sound folgt dem Fahrmodus** (abschaltbar); die Seite nutzt die ganze Breite (**Schmale Ansicht** lässt Platz für
   das Seitenfenster der geteilten Ansicht). Reiter **Sound** im Kopf führt aus den Einstellungen zurück
 - **Lautstärkeknopf:** Läuft Musik über **CarPlay** (oder Android Auto), mischt Sound Drive den Motorsound direkt in die
-  Musik. Der Knopf regelt dann beides zusammen, die Musik wird nicht abgesenkt, nichts pausiert. Ohne solche Musik
+  Musik: Die Musik wird nicht abgesenkt, nichts pausiert, der Knopf gehört der Musik. Ohne solche Musik
   (Pause, Radio, Bluetooth) nimmt die App den Overlay-Weg. Den behandelt das Auto wie eine Durchsage: Es senkt die Musik ab
   und gibt ihm den Knopf. Darum tritt der Motorsound dort beim Drehen kurz zur Seite (abschaltbar) und kommt 1–3 Sekunden
   nach dem letzten Drehen zurück.
 - **Motorsound unabhängig vom Lautstärkeknopf** (Standard: Normal): Die App liest die Lautstärke des Autos mit und regelt
-  den Motorsound gegenläufig – er bleibt beim Drehen etwa gleich laut, eingestellt wird er nur mit dem Regler in der App.
-  Passt die Stärke nicht zum Auto, gibt es mehrere Stufen. Grenze: Ist die Musik sehr leise, lässt sich der Motorsound nicht
-  beliebig anheben (höchstens +12 dB), denn beide laufen durch denselben Verstärkereingang.
+  den Motorsound sofort gegenläufig – er bleibt beim Drehen gleich laut, eingestellt wird er nur mit dem Regler in der App.
+- **Lautstärke abgleichen:** Wie viel lauter eine Stufe am Knopf macht, ist nicht überall gleich. Im Stand, Musik an, in den
+  Einstellungen einschalten: Ein gleichmäßiger Motorton läuft, und auf der Sound-Seite stellen **+** und **−** ihn bei der
+  jetzigen Auto-Lautstärke nach. Einmal bei normaler Lautstärke beginnen, dann leiser und lauter drehen und jeweils
+  nachstellen, bis der Motor gleich laut klingt. Dazwischen rechnet die App, der Abgleich bleibt gespeichert. Beim Losfahren
+  schaltet er sich ab. Grenze: Bei sehr leiser Musik lässt sich der Motorsound nicht beliebig anheben, denn beide laufen
+  durch denselben Verstärkereingang.
 - **Bei Telefon/Ansagen leiser:** Telefonate, Sprachassistent, Parkpiepser und Warngongs senken den Motorsound um
   etwa 12 dB ab; Navigationsansagen bewusst nicht
 - **Klang anpassen:** Bass (Dröhnen) ±6 dB und Auspuff-Bellen 50–150 % (wie weit Schalldämpfer und Innenraum
   öffnen) – für jedes Profil
 - **Motor anpassen:** Leerlauf- und Abregeldrehzahl sowie maximales Drehmoment des eigenen Motors – der Sound
   bildet das echte Drehzahlband auf das Profil ab
-- **Experten:** Tonweg, Ausgabegerät und Lastquelle (zum Ausprobieren in anderen Autos)
+- **Experten:** Tonweg und Lastquelle (zum Ausprobieren in anderen Autos)
 - **Testsound:** 9 Sekunden Leerlauf → Vollgas → Schub, auch im Stand
-- **Audio-Diagnose** direkt in der App: Verbindung zum Audiomanager, Quellen, Senken, SmartX-Kanäle, Vorlauf und
-  Aussetzer, Grund fürs Absenken
+- **BMW-Lautstärkeanzeige:** BMWs eigener Lautstärkebalken läge sonst unter der Seite. Beim Drehen tritt sie für 2,5 Sekunden
+  zurück (abschaltbar): BMWs Anzeige ist zu sehen, die Seite steht solange als Bild dahinter
+- **Audio-Diagnose** in klaren Worten: ein Satz zum Gesamtzustand, darunter sechs Karten (Audio-Dienst, Daten vom Auto,
+  Tonweg, Ton, Lautstärke, Start) mit Ampel und Tipp, was zu tun ist. **Technische Details** zeigt Verbindungen, Quellen,
+  Kanäle und Ringpuffer (auch im QR-Log)
 - **QR log** in den Einstellungen: das Log als QR-Codes zum Abfotografieren (für ein Issue ohne SSH)
 
 ### So kommt der Ton in die Lautsprecher
@@ -115,11 +122,8 @@ Der **Tonweg** ist in den Einstellungen unter „Experten“ wählbar. Standard 
   es gilt der Overlay-Weg. Wird es zu laut für beides, gibt die Musik kurz bis 2,5 dB nach.
 - **Overlay-Mix:** sonst. Der Motorsound liegt als eigener Kanal über der Musik, die weiterläuft, aber abgesenkt wird.
 
-**Verstärker direkt** ist ein Versuch (nur im Stand): Der Verstärker hat einen zweiten Eingang; ob das Auto unseren Kanal
-darauf legen lässt, zeigt sich erst im Auto. Alles steht danach im QR-Log.
-
-Weitere Wege (CarLife exklusiv, CarLife-Navi, MainSink,
-CarPlay-Kanal, ALSA direkt) sind zum Ausprobieren in anderen Autos und Ausstattungen gedacht.
+Weitere Wege (CarLife exklusiv, CarLife-Navi) sind zum Ausprobieren in anderen Autos gedacht. Wege auf andere Senken (MainSink,
+zweiter Verstärker-Eingang) hat das Auto im Test abgelehnt.
 
 Die Verbindung im Audiomanager braucht im Auto rund 6 Sekunden, bis sie hörbar ist. Darum baut Sound Drive sie schon
 auf, wenn das Auto aufwacht, und hält sie, solange der Motor läuft – so kommt der Ton beim Anlassen sofort. Bis die
@@ -148,8 +152,8 @@ Klappt es nicht auf Anhieb: In der Statuszeile sollte „In der CarPlay-Musik“
 
 | Komponente | Version |
 |---|---|
-| Sound Drive (App) | 1.0.9 |
-| Sound Drive Audio (Tool) | 1.0.9 |
+| Sound Drive (App) | 1.1.0 |
+| Sound Drive Audio (Tool) | 1.1.0 |
 
 ---
 
@@ -188,8 +192,8 @@ einem Fahrlehrer auf dem Beifahrersitz:
 
 | Pfad | Inhalt |
 |---|---|
-| `apps/iconix_sounds/` | Sound Drive: `main.js`, `ui.js`, `car_route.js` (Audiomanager), `synth.js` + `profiles.js` (Klang) |
-| `tools/iconix-audiod/` | Audio-Dienst: Synthese und Ausgabe über SmartX/ALSA (`engine.js`, `alsa_play.py`) |
+| `apps/iconix_sounds/` | Sound Drive: `main.js`, `ui.js`, `car_route.js` (Tonweg), `audio_link.js` (zum Dienst), `vehicle_feed.js`, `diagnose.js` |
+| `tools/iconix-audiod/` | Audio-Dienst: Klang (`synth.js`, `profiles.js`), Takt (`engine.js`), Ausgabe und Mischen (`alsa_play.py`) |
 | `apps/drive_coach/` | Fahrstil-Coach: `coach.js` (Bewertung), `goals.js` (Level, Abzeichen), `main.js` |
 | `kit/runtime/` | Laufzeit des Kits (Bildschirm, Signale, Einstellungen), wird in jede App gepackt |
 | `kit/tools/` | `build.py` (baut die App auf dem Head Unit), Tests und Klang-Werkzeuge |
@@ -207,33 +211,9 @@ node kit/tools/test_quick.js
 node kit/tools/iconix_calibrate.js --wav docs/sounds --rate 24000
 ```
 
-```bash
-node kit/tools/iconix_popscan.js
-```
-
-```bash
-node kit/tools/test_drive_coach.js
-```
-
-```bash
-python3 kit/tools/test_alsa_play.py
-```
-
-```bash
-node kit/tools/test_engine_e2e.js
-```
-
-```bash
-node kit/tools/test_daemon.js
-```
-
-```bash
-node kit/tools/iconix_soak.js
-```
-
 Dieselben Prüfungen laufen bei jedem Push als GitHub-Action (`.github/workflows/app-tests.yml`).
 
-`test_iconix_route.js` prüft Tonweg, Umrechnung und Klang (keine Höhen, keine Knackser, kaum
+`test_iconix_route.js` prüft Tonweg, Diagnose, Oberfläche und Klang (keine Höhen, keine Knackser, kaum
 Rauschen); `iconix_calibrate.js` misst Pegel und Klangbild je Profil und schreibt Hörproben;
 `iconix_popscan.js` sucht in einer Fahrt mit Schaltvorgängen nach Knacksern; `test_alsa_play.py` prüft den
 Python-Player mit einer simulierten Soundkarte; `test_engine_e2e.js` startet den Dienst mit echtem Player-Prozess und
@@ -269,7 +249,7 @@ Repository enthält nur den Teil, den die beiden Apps brauchen. Doku zum Kit:
 - Der Aufbau des SmartX-Ringpuffers ist aus Intels offenem Quelltext abgelesen
   ([intel/AVB-AudioModules](https://github.com/intel/AVB-AudioModules), BSD-3-Clause; eigene Umsetzung); dass CarPlay genau
   diesen Puffer benutzt, hat [NamelsMissing/mgu-apps](https://github.com/NamelsMissing/mgu-apps) beobachtet
-- Die Eingänge des Verstärkers und die Liste der physischen Verbindungen haben
+- Die Eingänge des Verstärkers haben
   [Vizualyse/idrive-apps](https://github.com/Vizualyse/idrive-apps) und [pllanaio/bmw-airplay](https://github.com/pllanaio/bmw-airplay) dokumentiert
   (eigene Umsetzung)
 

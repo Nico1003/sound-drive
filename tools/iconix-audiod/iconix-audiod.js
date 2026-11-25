@@ -4,23 +4,21 @@
  *
  * Läuft als systemd-Dienst (Root-Tool des mgu-store) auf dem Head Unit mit dessen Node 8.
  * Empfängt von der App über Unix-Sockets Drehzahl/Last/Tempo und Einstellungen und gibt den Sound
- * über engine.js aus (Synthese + aplay/pacat/pw-cat/gst).
+ * über engine.js aus (Synthese + alsa_play.py).
  *
  * Erreichbarkeit für die App (die ohne Root läuft):
  *   - Sockets: /run/iconix-audiod/audiod.sock (systemd RuntimeDirectory) und /tmp/iconix-audiod.sock
  *     (/tmp ist auf dem Head Unit ein gemeinsames tmpfs aller Prozesse – das Kit legt dort seine Frames ab)
  *   - Statusdatei /tmp/iconix-audiod.json (alle 2 s), damit die App auch ohne Socket sieht, dass der Dienst läuft
  *
- * Kommandozeile (auch am PC nutzbar):
- *   node iconix-audiod.js                     Dienst starten
- *   node iconix-audiod.js --probe             verfügbare Abspielprogramme anzeigen
- *   node iconix-audiod.js --play-test         9 s Test-Sweep direkt abspielen
- *   node iconix-audiod.js --wav out.wav [--profile v8] [--seconds 10] [--volume 0.8]
+ * Kommandozeile:
+ *   node iconix-audiod.js               Dienst starten
+ *   node iconix-audiod.js --diag-json   Tonkanäle und Ringpuffer als JSON (für die Diagnose, eigener Prozess)
  *
  * Umgebungsvariablen:
  *   ICONIX_AUDIOD_SOCKET  zusätzlicher/ersetzender Socket-Pfad (Tests: Named Pipe unter Windows)
  *   ICONIX_STATUS_FILE    Pfad der Statusdatei (Standard /tmp/iconix-audiod.json)
- *   sowie die von engine.js (ICONIX_PLAYER, ICONIX_DEVICE, ICONIX_RATE, ICONIX_LEAD_MS, ICONIX_BUFFER_US)
+ *   sowie die von engine.js
  *
  * Nur Node-8-kompatible Syntax verwenden.
  */
@@ -28,27 +26,13 @@ const fs = require('fs');
 const net = require('net');
 const cp = require('child_process');
 const path = require('path');
-const Synth = require('./synth');
-const Profiles = require('./profiles');
 const E = require('./engine');
 
-const VERSION = '1.0.9';
+const VERSION = '1.1.0';
 const SOCKETS = process.env.ICONIX_AUDIOD_SOCKET
   ? [process.env.ICONIX_AUDIOD_SOCKET]
   : ['/run/iconix-audiod/audiod.sock', '/tmp/iconix-audiod.sock'];
 const STATUS_FILE = process.env.ICONIX_STATUS_FILE || '/tmp/iconix-audiod.json';
-
-// ALSA-Scan als nummerierte Zeilen (Nummer = Einstellung "Gerät N")
-function scanLines(st) {
-  if (!st.scan) return [st.scanError ? 'ALSA-Scan: ' + st.scanError : 'ALSA-Scan: läuft noch …'];
-  if (!st.scan.length) return ['ALSA-Scan: keine Geräte' + (st.scanError ? ' (' + st.scanError + ')' : '')];
-  let n = 0;
-  return ['ALSA-Geräte (Nummer = Einstellung "Gerät N"):'].concat(st.scan.map(function (x) {
-    if (x.ok) return '  ' + (++n) + ') ' + x.name + ' – lässt sich öffnen';
-    if (x.silent) return '  -  ' + x.name + ' – stumm (verwirft den Ton)';
-    return '  -  ' + x.name + ' – ' + String(x.error || 'Fehler').replace(/^(open|set_params): /, '');
-  }));
-}
 
 function log(msg) { console.log(new Date().toISOString() + ' iconix-audiod: ' + msg); }
 
@@ -96,29 +80,20 @@ function runDaemon() {
     if (m.op === 'params') engine.params(m);
     else if (m.op === 'config') { engine.configure(m.cfg); }
     else if (m.op === 'test') { log('Testsound'); engine.test(); }
-    else if (m.op === 'scan') { log('ALSA-Scan'); engine.scanDevices(function () { broadcast(false); }); }
-    else if (m.op === 'testdevices') { log('Gerätetest'); engine.testDevices(); }
     else if (m.op === 'hello') log('App verbunden: ' + m.id + ' ' + m.version);
     else if (m.op === 'diag') {
       if (diagBusy) return;
       diagBusy = true;
-      // In einem eigenen Prozess: Das Durchsuchen von /proc und der Konfigurationen dauert auf dem Head Unit über 300 ms –
-      // im Dienst selbst setzte der Ton so lange aus.
+      // in einem eigenen Prozess (rund 1 s): im Dienst selbst setzte der Ton so lange aus
       cp.execFile(process.execPath, [__filename, '--diag-json'], { timeout: 20000, maxBuffer: 1 << 23 }, function (e, stdout) {
-      diagBusy = false;
-      let lines;
-      try {
-        const x = JSON.parse(stdout), sx = x.smartx, r = x.audio, eps = x.endpoints;
-        engine.smartx = sx;
-        log('SmartX: ' + JSON.stringify(sx));
-        log('Diagnose: ' + JSON.stringify(r));
-        lines = ['--- Ausgabe ---', 'Gerät: ' + engine.device + ' -> ' + engine.status().resolved,
-          'SmartX-Kanäle (Wiedergabe): ' + (eps.length ? eps.join(', ') : 'keine in /dev/shm'), E.ringLine(x.rings)].concat(E.smartxLines(sx)).concat(['--- Allgemein (root) ---'], E.diagLines(r, []));
-      } catch (x) { lines = ['Diagnose fehlgeschlagen: ' + (e && e.message || x.message)]; }
-      const msg = JSON.stringify({ op: 'diag', lines: lines }) + '\n';
-      clients.forEach(function (c) { try { c.write(msg); } catch (x) { /* egal */ } });
-      // ALSA-Geräte erst jetzt prüfen (beim ersten Öffnen der Diagnose); das Ergebnis kommt mit dem nächsten Status
-      if (!engine.scan && !engine.scanning) { engine.scanning = true; engine.scanDevices(function () { engine.scanning = false; broadcast(false); }); }
+        diagBusy = false;
+        let lines;
+        try {
+          const x = JSON.parse(stdout), eps = x.endpoints;
+          lines = ['SmartX-Kanäle (Wiedergabe): ' + (eps.length ? eps.join(', ') : 'keine in /dev/shm'), E.ringLine(x.rings)];
+        } catch (x) { lines = ['Diagnose fehlgeschlagen: ' + (e && e.message || x.message)]; }
+        const msg = JSON.stringify({ op: 'diag', lines: lines }) + '\n';
+        clients.forEach(function (c) { try { c.write(msg); } catch (x) { /* egal */ } });
       });
     }
   }
@@ -146,7 +121,10 @@ function runDaemon() {
         if (rx.length > 65536) rx = '';
       });
       sock.on('error', function () { /* close folgt */ });
-      sock.on('close', function () { clients.delete(sock); });
+      sock.on('close', function () {
+        clients.delete(sock);
+        if (!clients.size) engine.configure({ steady: false });   // App weg: kein Dauerton (Abgleich)
+      });
       try { sock.write(JSON.stringify(status()) + '\n'); } catch (e) { /* egal */ }
     });
     server.on('error', function (e) { log('Socket ' + p + ': ' + e.message); });
@@ -160,10 +138,7 @@ function runDaemon() {
 
   SOCKETS.forEach(listen);
   engine.start();
-  // Kein ALSA-Scan beim Start: Er öffnet bis zu 80 Geräte (Python + libasound) und bremste das Hochfahren des Head
-  // Units. Gescannt wird erst, wenn ihn jemand braucht: Audio-Diagnose, "Geräte testen" oder Ausgabegerät "Gerät N".
-  const st = engine.status();
-  log('Version ' + VERSION + ' – ' + (st.players.length ? 'Ausgabe: ' + st.players.join(', ') : st.error));
+  log('Version ' + VERSION);
 
   setInterval(function () { broadcast(true); }, 1000);
   writeStatusFile();
@@ -184,65 +159,8 @@ function runDaemon() {
   process.on('uncaughtException', function (e) { log('Fehler: ' + (e && e.stack || e)); });
 }
 
-// ---------------------------------------------------------------------------
-// Werkzeuge
-// ---------------------------------------------------------------------------
-function arg(name, def) {
-  const i = process.argv.indexOf(name);
-  return i >= 0 && process.argv[i + 1] && process.argv[i + 1].indexOf('--') !== 0 ? process.argv[i + 1] : def;
-}
-
-function renderWav(file) {
-  const RATE = E.RATE;
-  const profile = arg('--profile', Profiles.DEFAULT);
-  const seconds = Number(arg('--seconds', '9'));
-  const synth = new Synth(RATE);
-  synth.configure({
-    profile: profile, volume: Number(arg('--volume', '0.8')),
-    intensity: Number(arg('--intensity', '0.7'))
-  });
-  synth._setProfile(Profiles.get(profile).id); synth.pending = null;
-  const frames = Math.floor(seconds * RATE);
-  const pcm = Buffer.alloc(frames * 4);
-  const block = 512, f32 = new Float32Array(block * 2);
-  let peak = 0;
-  for (let pos = 0; pos < frames; pos += block) {
-    const n = Math.min(block, frames - pos);
-    synth.setParams(E.sweepAt(pos / RATE, synth.cfg));
-    peak = Math.max(peak, synth.render(f32, n));
-    E.toPcm(f32, n).copy(pcm, pos * 4);
-  }
-  const h = Buffer.alloc(44);
-  h.write('RIFF', 0); h.writeUInt32LE(36 + pcm.length, 4); h.write('WAVE', 8);
-  h.write('fmt ', 12); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(2, 22);
-  h.writeUInt32LE(RATE, 24); h.writeUInt32LE(RATE * 4, 28); h.writeUInt16LE(4, 32); h.writeUInt16LE(16, 34);
-  h.write('data', 36); h.writeUInt32LE(pcm.length, 40);
-  fs.writeFileSync(file, Buffer.concat([h, pcm]));
-  console.log(file + ': ' + Profiles.get(profile).name + ', ' + seconds + ' s, Spitze ' + peak.toFixed(3));
-}
-
-function playTest() {
-  const engine = new E.Engine({ log: log });
-  engine.configure({ profile: arg('--profile', Profiles.DEFAULT), volume: 0.7 });
-  if (!engine.status().players.length) { console.error('Kein Abspielprogramm: ' + engine.status().error); process.exit(1); }
-  engine.test();
-  engine.start();
-  setTimeout(function () { engine.stop(); setTimeout(function () { process.exit(0); }, 500); }, 9500);
-}
-
 if (require.main === module) {
-  if (process.argv.indexOf('--probe') >= 0) {
-    const list = E.candidates();
-    console.log(list.length ? list.map(function (b) { return b.name + '  ' + b.path + ' ' + b.argv.join(' '); }).join('\n') : 'Kein Abspielprogramm gefunden.');
-  } else if (process.argv.indexOf('--diag-json') >= 0) {
-    process.stdout.write(JSON.stringify({ smartx: E.probeSmartx(), audio: E.probeAudio(), endpoints: E.smartxEndpoints(), rings: E.rings() }));
-  } else if (process.argv.indexOf('--wav') >= 0) {
-    renderWav(arg('--wav', 'iconix.wav'));
-  } else if (process.argv.indexOf('--play-test') >= 0) {
-    playTest();
-  } else {
-    runDaemon();
-  }
+  if (process.argv.indexOf('--diag-json') >= 0) process.stdout.write(JSON.stringify({ endpoints: E.smartxEndpoints(), rings: E.rings() }));
+  else runDaemon();
 }
 
-module.exports = { sweepAt: E.sweepAt, toPcm: E.toPcm, candidates: E.candidates };

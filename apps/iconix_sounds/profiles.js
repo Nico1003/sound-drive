@@ -1,9 +1,9 @@
 /*
  * Sound Drive – Sound-Profile (für synth.js Version 2)
  *
- * Gemeinsame Datei für App und Audio-Dienst (Node 8). Nur ES2017-Syntax.
+ * Gemeinsame Datei für App und Audio-Dienst (Node 8): hier für die Synthese, in der App für Namen und Auswahl. Nur ES2017-Syntax.
  *
- * Verbrenner ("combustion"):
+ * Felder eines Profils:
  *   layout       Zündereignisse [Kurbelwinkel im 720°-Zyklus, Bank 0/1] in Zündfolge
  *   displacement Hubraum in Litern (Impulsgröße, Klangfülle)
  *   idleRpm / maxRpm  virtueller Drehzahlbereich; echte Leerlauf- bis Abregeldrehzahl wird darauf
@@ -23,9 +23,6 @@
  *               Körperschall (tiefpassgefilterte Zündimpulse über Motorlager und Karosserie) und dessen Grenzfrequenz
  *   gain        Pegelabgleich zwischen den Profilen (mit kit/tools/iconix_calibrate.js ermittelt)
  *   Die Kennungen (id) bleiben bei Umbenennungen gleich: Sie stehen in den gespeicherten Einstellungen.
- *
- * Elektro ("electric"): baseHz, octaveKmh, voices [Verhältnis, Pegel, Verstimmung], sub, cutoff,
- *   cutoffPerKmh, lfoHz, lfoDepth, drive, gain.
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -49,7 +46,7 @@
       // Der eine Vierzylinder (statt vorher drei ähnlicher), auf das schmale Drehzahlband eines Diesels abgestimmt: oben
       // kräftig statt dünn – tiefere Tonlage bei Höchstdrehzahl, ungleiche Krümmer und Zylinder (Halbordnungen füllen
       // den Ton unter der Zündfrequenz), mehr Hubraum, Körperschall und Bass
-      id: 'turbo4', name: 'Power Four', desc: 'Kräftiger Vierzylinder, oben satt statt dünn', kind: 'combustion',
+      id: 'turbo4', name: 'Power Four', desc: 'Kräftiger Vierzylinder, oben satt statt dünn',
       layout: I4, displacement: 2.6, idleRpm: 800, maxRpm: 5600, blowdown: 64, flowExp: 0.8,
       headerM: 0.9, headerRatio: 1.5, headerSpread: 0.22,
       pipeM: 2.6, pipeLp: 2100, chamberM: 0.4, mufflerHz: 1120, mufflerQ: 0.8,
@@ -58,7 +55,7 @@
     },
     {
       // Reihensechser: glatt und rauchig, dreht frei hoch
-      id: 'supra', name: 'Supra', desc: 'Reihensechser: seidig, rauchig, dreht frei hoch', kind: 'combustion',
+      id: 'supra', name: 'Supra', desc: 'Reihensechser: seidig, rauchig, dreht frei hoch',
       layout: I6, displacement: 3.0, idleRpm: 800, maxRpm: 6500, blowdown: 64, flowExp: 0.6,
       headerM: 0.68, headerRatio: 1.04, headerSpread: 0.05,
       pipeM: 2.9, pipeLp: 2500, chamberM: 0.33, mufflerHz: 1600, mufflerQ: 0.85,
@@ -67,7 +64,7 @@
     },
     {
       // Vierzylinder-Boxer: ungleich lange Krümmer je Zylinderbank = das bekannte Grummeln
-      id: 'boxer', name: 'Flat Four', desc: 'Grummelnd, ungleiche Krümmer', kind: 'combustion',
+      id: 'boxer', name: 'Flat Four', desc: 'Grummelnd, ungleiche Krümmer',
       layout: B4, displacement: 2.2, idleRpm: 800, maxRpm: 6200, blowdown: 62, flowExp: 0.55,
       headerM: 0.7, headerRatio: 1.35, headerSpread: 0.15,
       pipeM: 3.0, pipeLp: 2200, chamberM: 0.36, mufflerHz: 1150, mufflerQ: 0.8,
@@ -77,7 +74,7 @@
     {
       // Sechszylinder-Boxer: je Bank gleichmäßig (240°), beide Bänke hörbar verschieden (ungleiche Krümmer, Motor hinten =
       // kurze Anlage): kehlig und sonor, dreht heiser hoch
-      id: 'boxer6', name: 'Flat Six', desc: 'Sechszylinder-Boxer: kehlig, sonor, dreht frei hoch', kind: 'combustion',
+      id: 'boxer6', name: 'Flat Six', desc: 'Sechszylinder-Boxer: kehlig, sonor, dreht frei hoch',
       layout: F6, displacement: 3.6, idleRpm: 750, maxRpm: 6500, blowdown: 62, flowExp: 0.55,
       headerM: 0.62, headerRatio: 1.3, headerSpread: 0.13,
       pipeM: 2.3, pipeLp: 2300, chamberM: 0.34, mufflerHz: 1250, mufflerQ: 0.85,
@@ -86,7 +83,7 @@
     },
     {
       // Fünfzylinder: die ungerade Zündfolge (144°) gibt das typische Trällern, rau und kehlig
-      id: 'turbo5', name: 'Rally Five', desc: 'Fünfzylinder: trällernd, rau und kehlig', kind: 'combustion',
+      id: 'turbo5', name: 'Rally Five', desc: 'Fünfzylinder: trällernd, rau und kehlig',
       layout: I5, displacement: 2.5, idleRpm: 800, maxRpm: 6500, blowdown: 64, flowExp: 0.6,
       headerM: 0.66, headerRatio: 1.12, headerSpread: 0.14,
       pipeM: 2.8, pipeLp: 2400, chamberM: 0.34, mufflerHz: 1400, mufflerQ: 0.85,
@@ -95,7 +92,7 @@
     },
     {
       // Cross-Plane-V8: ungleichmäßige Impulsfolge je Bank = das typische Blubbern
-      id: 'v8', name: 'Muscle V8', desc: 'Tiefes Blubbern, Bariton', kind: 'combustion',
+      id: 'v8', name: 'Muscle V8', desc: 'Tiefes Blubbern, Bariton',
       layout: V8X, displacement: 4.4, idleRpm: 650, maxRpm: 5800, blowdown: 62, flowExp: 0.5,
       headerM: 0.8, headerRatio: 1.08, headerSpread: 0.12,
       pipeM: 2.8, pipeLp: 1800, chamberM: 0.42, mufflerHz: 1100, mufflerQ: 0.8,
@@ -104,7 +101,7 @@
     },
     {
       // V10 mit Bank-Unterschieden: Halbordnungen machen ihn voll statt schrill; begrenztes Drehzahlband
-      id: 'v10', name: 'Track V10', desc: 'Voll und dicht, Rennsound', kind: 'combustion',
+      id: 'v10', name: 'Track V10', desc: 'Voll und dicht, Rennsound',
       layout: V10, displacement: 5.0, idleRpm: 900, maxRpm: 6800, blowdown: 64, flowExp: 0.5,
       headerM: 0.65, headerRatio: 1.1, headerSpread: 0.1,
       pipeM: 2.6, pipeLp: 2600, chamberM: 0.34, mufflerHz: 1800, mufflerQ: 0.8,
@@ -114,7 +111,7 @@
     {
       // V12: zwei Reihensechser auf einer Kurbelwelle, gleichmäßig alle 60°. Deutliche Bank-Unterschiede geben ihm die
       // 3. Ordnung als Grundton (sonst bliebe nur ein hoher, dünner Ton); begrenztes Drehzahlband
-      id: 'v12', name: 'Grand V12', desc: 'Seidig und mächtig, singt oben heraus', kind: 'combustion',
+      id: 'v12', name: 'Grand V12', desc: 'Seidig und mächtig, singt oben heraus',
       layout: V12, displacement: 6.0, idleRpm: 700, maxRpm: 6000, blowdown: 64, flowExp: 0.5,
       headerM: 0.7, headerRatio: 1.16, headerSpread: 0.1,
       pipeM: 2.8, pipeLp: 2400, chamberM: 0.36, mufflerHz: 1500, mufflerQ: 0.85,

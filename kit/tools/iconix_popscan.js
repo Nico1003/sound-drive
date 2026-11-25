@@ -16,7 +16,7 @@ const Profiles = require(path.join(ROOT, 'tools/iconix-audiod/profiles.js'));
 
 const args = process.argv.slice(2).filter((a) => a !== '--quiet');
 const quiet = process.argv.indexOf('--quiet') >= 0;
-const ids = args.length ? args : Profiles.ids.filter((id) => Profiles.get(id).kind !== 'electric');
+const ids = args.length ? args : Profiles.ids;
 const SR = 24000, SPIKE = 3.2;
 
 // Fahrt mit Schaltvorgängen (Lastknick 0.25 für 0,22 s wie im Simulator) und Lastwechseln
