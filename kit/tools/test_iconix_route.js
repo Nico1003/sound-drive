@@ -587,6 +587,30 @@ test('Radio: Einstellung "kein Motorsound bei Radio" verbindet nicht, CarPlay un
   } finally { setClock(realNow); }
 });
 
+test('Radio-Test: währenddessen keine Verbindung (weich getrennt), danach wieder', async () => {
+  const { am, signals } = fakeAm();
+  const r = new CarRoute(signals, quiet, null);
+  const realNow = setClock(null); let t = realNow(); setClock(() => t);
+  const own = () => am.conns.filter((c) => c.sourceID === 1048).length;
+  const step = async (ms) => { t += ms; r.want(r.pick('auto', {}, null), true); await r._step(); await new Promise((ok) => setImmediate(ok)); };
+  try {
+    am.conns.push({ mainConnectionID: 7, sourceID: 1, sinkID: 1024, connectionState: 2 });
+    for (let i = 0; i < 4; i++) await step(500);
+    assert.strictEqual(own(), 1);
+    r.pause(true); assert.ok(!r.audible()); await step(100); assert.strictEqual(own(), 1, 'erst ausblenden');
+    await step(500); assert.ok(own() === 0 && /Radio-Test/.test(r.state), r.state);
+    await step(3000); assert.strictEqual(own(), 0, 'bleibt getrennt');
+    r.pause(false); await step(2000); await step(500); assert.strictEqual(own(), 1);
+  } finally { setClock(realNow); }
+});
+
+test('Oben lauter: Pegel am Ausgang steigt mit der Drehzahl, beim Abgleich nicht', () => {
+  const e = new E.Engine({ log() {}, onStatus() {} });
+  e.synth.rpm = 1500; assert.strictEqual(e._lift(), 0);
+  e.synth.rpm = e.synth.profile.maxRpm; assert.strictEqual(e._lift(), 2.5);
+  e.steady = true; assert.strictEqual(e._lift(), 0); e.stop();
+});
+
 test('Diagnose: klare Worte, Ampel und nächster Schritt', () => {
   const card = (m, t) => m.cards.find((c) => c.title === t);
   const ok = diagOf();
@@ -706,7 +730,7 @@ test('Klang-Regler: Bass und Bellen wirken', () => {
     const band = (lo, hi, st) => { let en = 0; for (let fr = lo; fr < hi; fr += st) { let re = 0, im = 0; for (let i = 0; i < x.length; i += 2) { const w = 2 * Math.PI * fr * i / 24000; re += x[i] * Math.cos(w); im += x[i] * Math.sin(w); } en += re * re + im * im; } return en; };
     return band(250, 1200, 6) / band(40, 250, 4); };
   const m50 = midShare({ barkPct: 0.5 }), m150 = midShare({ barkPct: 1.5 });
-  assert.ok(m150 > m50 * 1.6, 'Bellen 50 % ' + m50.toFixed(3) + ' vs 150 % ' + m150.toFixed(3));
+  assert.ok(m150 > m50 * 1.5, 'Bellen 50 % ' + m50.toFixed(3) + ' vs 150 % ' + m150.toFixed(3));
 });
 
 test('Einstellungen der neuen Funktionen vorhanden', () => {

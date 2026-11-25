@@ -28,7 +28,7 @@ const CarRoute = require('./car_route');
 const Diagnose = require('./diagnose');
 const Clock = require('./clock');
 
-const VERSION = '1.1.1';
+const VERSION = '1.1.2';
 // eigener Reiter "Sound" neben "Settings" im Kopf des Kits (führt aus den Einstellungen zurück)
 const TAB_INFO = { tabs: ['Sound'], sel: 0, badges: [] };
 // Audiomanager-Verbindung: Sie braucht im Auto ~6 s, bis sie hörbar ist (CS_CONNECTED). Darum wird sie schon beim
@@ -124,6 +124,7 @@ function startCore(host) {
   };
   let calAnchor = false;
   let lastActivity = 0, lastData = 0, pendingTest = 0;
+  let probing = null, probeResult = '';      // Radio-Test: { i, n, name, heard, list, timer } und sein Ergebnis
 
   // Autostart nachvollziehen: wann nach dem Hochfahren des Head Units kam die App, die Drehzahl, der Tonweg, der Ton?
   // Steht im Log (QR-Log) und in der Audio-Diagnose.
@@ -218,7 +219,39 @@ function startCore(host) {
     pushCfg();
   };
   const cal = () => (calOn ? { vol: route.compVol, db: route.compVol === null ? 0 : route.curveAt(route.compVol), off: !uiCfg.knobComp } : null);
-  core = { link, feed, route, pushCfg, cal, calAdjust: d => route.calAdjust(d), synthCfg, test, previewVolume, ui: () => uiCfg, last: () => last, speed: () => feed.speed(),
+  // Radio-Test: Der Dienst gibt auf jeden laufenden Kanal nacheinander drei leise Töne; gesucht ist einer, den man über dem
+  // Radio hört, ohne dass das Auto es absenkt. Was gehört wurde, steht im QR-Log.
+  const probeDone = text => {
+    const p = probing;
+    if (!p) return;
+    clearTimeout(p.timer); clearTimeout(p.first);
+    probing = null;
+    route.pause(false);
+    const t = text || (p.heard.length ? 'Gehört: ' + p.heard.join(', ') : 'Nichts gehört');
+    log.info('iconix: Radio-Test (Musikquelle ' + route.music + ', ' + p.list.length + ' Kanäle): ' + t);
+    probeResult = t + (p.heard.length ? ' – bitte QR-Log schicken' : '');
+  };
+  const probe = () => {
+    if (probing) { link.send({ op: 'probe', stop: true }); probeDone(); return; }
+    probeResult = !link.connected ? 'Audio-Dienst nicht verbunden' : outdated(link) ? 'Erst „Sound Drive Audio“ aktualisieren' : '';
+    if (probeResult) return;
+    probing = { i: 0, n: 0, name: '', heard: [], list: [], timer: setTimeout(() => probeDone('Keine Antwort vom Audio-Dienst'), 20000),
+      first: setTimeout(() => link.send({ op: 'probe' }), 3500) };    // erst ist das Radio wieder voll laut
+    route.pause(true);
+  };
+  link.on('probe', m => {
+    if (!probing) return;
+    if (m.error || m.done) { probeDone(m.error ? String(m.error).slice(0, 80) : ''); return; }
+    clearTimeout(probing.timer);
+    probing.timer = setTimeout(() => probeDone('Abgebrochen: keine Antwort mehr'), 20000);
+    probing.i = m.i; probing.n = m.n; probing.name = m.i + ' ' + m.name;
+    probing.list.push(probing.name);
+    log.info('iconix: Radio-Test: Kanal ' + probing.name);
+  });
+  const probeHeard = () => { if (probing && probing.name && probing.heard.indexOf(probing.name) < 0) { probing.heard.push(probing.name); log.info('iconix: Radio-Test: gehört ' + probing.name); } };
+  const probeState = () => (probing ? { i: probing.i, n: probing.n, marked: probing.heard.indexOf(probing.name) >= 0 } : probeResult ? { text: probeResult } : null);
+  const probeEnd = () => { if (probing) probe(); probeResult = ''; };
+  core = { link, feed, route, probe, probeHeard, probeState, probeEnd, pushCfg, cal, calAdjust: d => route.calAdjust(d), synthCfg, test, previewVolume, ui: () => uiCfg, last: () => last, speed: () => feed.speed(),
     marks,
     diag: () => Diagnose.build({ connected: link.connected, waiting: link.waiting(), why: link.why(), ds: link.connected ? link.daemonStatus : null, version: VERSION, outdated: outdated(link),
       rpm: last ? last.rpm : null, rpmAge: last ? Clock.now() - last.at : 0, speed: feed.speed(), enabled: bool(setting(settings, 'enabled')), volume: synthCfgCache.volume, route: route.info(), marks }) };
@@ -343,7 +376,8 @@ mgu.run({
       c.link.diagnose();
       c.route.diagLines().then(l => { routeLines = l; refreshDiag(d); }, e => { routeLines = ['Audiomanager: ' + e]; refreshDiag(d); });
     };
-    ctx.ui.onClick('BTN_DIAG', () => { if (diag) diag = null; else openDiag(); });
+    const closeDiag = () => { diag = null; c.probeEnd(); };
+    ctx.ui.onClick('BTN_DIAG', () => { if (diag) closeDiag(); else openDiag(); });
     c.link.on('diag', () => refreshDiag(diag));
 
     // Bedienbare Flächen (Profil-Chips, Lautstärke −/+, Stumm) – Geometrie aus ui.js
@@ -353,11 +387,14 @@ mgu.run({
       else if (h.act === 'mute') set('enabled', !bool(get('enabled')));
       else if (h.act === 'diagMode' && diag) { diag.details = !diag.details; diag.page = 0; }
       else if (h.act === 'diagNext' && diag) diag.page++;
-      else if (h.act === 'diagClose') diag = null;
+      else if (h.act === 'diagProbe') c.probe();
+      else if (h.act === 'diagHeard') c.probeHeard();
+      else if (h.act === 'diagClose') closeDiag();
     };
     // Touch-Ziele je Ansicht (schmal: Seitenfenster frei, breit: ganze Seite)
     const mkHits = wide => ({ main: UI.hits(Profiles.list, wide).map(h => Object.assign({ run: () => act(h) }, h)),
       diag: UI.hitsDiag(wide, false).map(h => Object.assign({ run: () => act(h) }, h)),
+      probe: UI.hitsDiag(wide, false, true).map(h => Object.assign({ run: () => act(h) }, h)),
       details: UI.hitsDiag(wide, true).map(h => Object.assign({ run: () => act(h) }, h)) });
     const HITS_BY = { narrow: mkHits(false), wide: mkHits(true) };
 
@@ -435,9 +472,10 @@ mgu.run({
       const cfg = c.synthCfg();
       const a = audioStatus(c), now = Clock.now(), k = c.cal();
       if (diag && now - diag.at >= 500) { const m = c.diag(); if (JSON.stringify(m) !== JSON.stringify(diag.model)) { diag.model = m; diag.at = now; } }
+      if (diag) diag.probe = c.probeState();
       const key = cfg.profile + '|' + cfg.enabled + '|' + cfg.volume + '|' + cfg.sport + '|' + cfg.mode + '|' + c.ui().wide + '|' + cfg.carRedline + '|' +
         (s ? Math.round(s.rpm / 10) : '-') + '|' + Math.round(c.speed()) + '|' + a.text + '|' + a.ok + '|' +
-        (diag ? diag.details + ':' + diag.page + ':' + diag.lines.length + ':' + diag.at : '') + (k ? '|' + k.vol + '|' + k.db + '|' + k.off : '');
+        (diag ? diag.details + ':' + diag.page + ':' + diag.lines.length + ':' + diag.at + (diag.probe ? JSON.stringify(diag.probe) : '') : '') + (k ? '|' + k.vol + '|' + k.db + '|' + k.off : '');
       if (now - lastDraw < 33 || (key === lastKey && now - lastDraw < 1000)) return undefined;
       lastKey = key; lastDraw = now;
       const cv = ctx.canvas(UI.W, UI.H);
@@ -457,7 +495,7 @@ mgu.run({
       UI.draw(g, st);
       // Ziele nach dem Zeichnen registrieren (wie apps/dyno, live_data: nur wenn cv.own)
       if (own && typeof cv.target === 'function') {
-        const hb = HITS_BY[c.ui().wide ? 'wide' : 'narrow'], list = diag ? (diag.details ? hb.details : hb.diag) : hb.main;
+        const hb = HITS_BY[c.ui().wide ? 'wide' : 'narrow'], list = diag ? (diag.details ? hb.details : diag.probe && !diag.probe.text ? hb.probe : hb.diag) : hb.main;
         for (let i = 0; i < list.length; i++) { const h = list[i]; cv.target(h.x, h.y, h.w, h.h, h.run, h.key, h.r); }
       }
       return ctx.ui.image('MAIN_GFX', cv);

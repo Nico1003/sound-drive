@@ -7,6 +7,7 @@ Das Head Unit hat libasound und Python 3.12 (mgu-python), aber kein aplay. Diese
   alsa_play.py play <gerät> <rate> [puffer_us] [kanäle]
                                      liest S16LE (Stereo oder Mono) von stdin und spielt es auf <gerät> ab
   alsa_play.py mix <Kanal> [rate]    mischt S16LE Stereo von stdin in den Musikstrom eines SmartX-Kanals (z. B. CarPlay)
+  alsa_play.py probe <smartx|avb> <Kanal>   Radio-Test: drei leise Töne in einen laufenden Kanal mischen
   alsa_play.py rings                 gibt JSON aus: die Ringpuffer der SmartX-/AVB-Kanäle
 
 Ausgaben auf stderr in Zeilen wie aplay (z. B. "underrun!!!"), damit engine.js sie zählt.
@@ -15,6 +16,7 @@ import array
 import ctypes
 import ctypes.util
 import json
+import math
 import mmap
 import operator
 import os
@@ -838,6 +840,49 @@ def cmd_mix(channel, rate=24000):
     return 0
 
 
+def cmd_probe(bar, name):
+    """Radio-Test: drei leise Töne (je 0,35 s, -24 dBFS) zu dem mischen, was in diesem Kanal gerade läuft."""
+    if bar not in ('smartx', 'avb') or not re.match(r'[A-Za-z0-9_]{1,100}$', name):
+        return 2
+    try:
+        ring = Ring(os.path.join(os.environ.get('ICONIX_SHM_DIR', '/dev/shm'), '%s_%s_p_ringbuffer' % (bar, name)), write=True)
+    except (OSError, RingError, ValueError) as e:
+        sys.stderr.write('probe: %s\n' % e)
+        return 2
+    realtime()
+    rate = 24000 if '_CF_24_' in name else 48000
+    beep, tone = int(rate * 0.35), array.array('h')
+    for _k in range(3):
+        for i in range(2 * beep):
+            env = max(0.0, min(1.0, i / (rate * 0.02), (beep - i) / (rate * 0.02)))
+            v = int(2060 * env * math.sin(2 * math.pi * 620.0 * i / rate)) if env > 0 else 0
+            tone.extend((v, v))
+    data, pos, done, mixer, wlast = tone.tobytes(), 0, 0, Mixer(ring), None
+    poll = min(0.004, ring.period / float(rate) / 3.0)
+    end = time.monotonic() + 6.0
+    try:
+        while pos < len(data) and time.monotonic() < end:
+            _r, w, lvl = ring.state()
+            if wlast is None:
+                wlast = w
+            new = (w - wlast) % ring.frames
+            wlast = w
+            use = min(new, lvl)         # nur Ungelesenes
+            pos += (new - use) * 4
+            part = data[pos:pos + use * 4]
+            if part:
+                mixer.add((w - use) % ring.frames, part)
+                pos += len(part)
+                done += len(part) // 4
+            time.sleep(poll)
+    except RingError as e:
+        sys.stderr.write('probe: %s\n' % e)
+    finally:
+        ring.close()
+    sys.stderr.write('probe: %d von %d Frames gemischt\n' % (done, len(data) // 4))
+    return 0 if done else 5
+
+
 def cmd_rings():
     """Alle SmartX-/AVB-Ringpuffer: Aufbau und ob sich gerade etwas bewegt (nur lesen; für die Audio-Diagnose)."""
     d = os.environ.get('ICONIX_SHM_DIR', '/dev/shm')
@@ -877,6 +922,8 @@ if __name__ == '__main__':
             sys.exit(cmd_play(a[1], int(a[2]), int(a[3]) if len(a) > 3 else 200000, int(a[4]) if len(a) > 4 else 2))
         elif len(a) >= 2 and a[0] == 'mix':
             sys.exit(cmd_mix(a[1], int(a[2]) if len(a) > 2 else 24000))
+        elif len(a) >= 3 and a[0] == 'probe':
+            sys.exit(cmd_probe(a[1], a[2]))
         elif a and a[0] == 'rings':
             cmd_rings()
         else:

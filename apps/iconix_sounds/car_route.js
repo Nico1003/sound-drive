@@ -62,6 +62,7 @@ const MUSIC_OLD_MS = 10000;     // älter: unbekannt
 const DUCK_RE = /phone|tel|call|hfp|handsfree|siri|assist|sds|pdc|park|chime|gong|warn|alert|ecall|bcall/i;
 const NO_DUCK_RE = /media|radio|tuner|usb|a2dp|music|audio_stream|carlife|overlay|iconix|navi|guidance|tts|prompt|announce|traffic/i;
 const DUCK_POLL_MS = 1500;
+const FADE_MS = 250;        // Radio-Test: so lange blendet der Motorsound aus, bevor die Verbindung geht
 // Lautstärkeknopf: Das Auto behandelt unsere Quelle wie eine Durchsage – solange sie verbunden ist, regelt der Knopf
 // sie statt der Musik (so beschrieben von loenne007/idrive-enginesound). Die Lautstärke, die der Knopf bewegt, steht
 // bei der Haupt-Senke (1). Ändert sie sich, tritt der Motorsound zur Seite (stumm, Verbindung frei), der Knopf gehört
@@ -157,6 +158,7 @@ class CarRoute {
     this._loadCurve();
     this.auto = false; this.pickId = DEFAULT_ROUTE; this.goodId = null; this.goodAt = 0; this.badAt = 0; this.mixBlock = 0;
     this.radioOn = true; this.startAt = Clock.now();   // Einstellung "Motorsound bei Radio ..."
+    this.paused = false; this.fadeUntil = 0;           // Radio-Test: keine Verbindung
     this.music = null; this.musicAt = 0;     // Musikquelle am vorderen Lautsprecherweg (Nummer) und wann gelesen
     this.onChange = null;       // fn(): hörbar/gehalten hat sich geändert (die App schaltet den Ton weich)
     this.lastAudible = null;
@@ -213,7 +215,9 @@ class CarRoute {
     const l = list.filter((c) => c.sink === SINK_FRONT && !Object.keys(ROUTES).some((k) => ROUTES[k].source === c.source) && (!c.state || c.state === 'CS_CONNECTED'));
     this.interrupt = l.some((c) => MUSIC_SOURCES.indexOf(c.source) < 0);
     const hit = l.filter((c) => MIX_IDS.some((k) => ROUTES[k].music === c.source))[0] || l[0];
-    this.music = hit ? hit.source : null;
+    const music = hit ? hit.source : null;
+    if (music !== this.music) this.log.info('iconix: Musikquelle jetzt ' + (music === null ? 'keine' : music + (this.srcNames[music] ? ' ' + this.srcNames[music] : '')));
+    this.music = music;
     this.musicAt = Clock.now();
   }
 
@@ -244,8 +248,12 @@ class CarRoute {
   /** Motorsound bei Radio, Bluetooth und USB an/aus (Einstellung): deren Ton kommt nicht durch CarPlays Kanal, es geht nur der Overlay-Weg. */
   setRadio(on) { this.radioOn = !!on; }
 
+  /** Radio-Test: solange keine Verbindung (sonst senkte das Auto das Radio währenddessen ab). */
+  pause(on) { this.paused = !!on; if (on) this.fadeUntil = Clock.now() + FADE_MS; this._changed(); }
+
   /** Spielt gerade Musik, bei der der Motorsound laut Einstellung aus bleibt? Nur im Automatik-Betrieb. */
   skipped() {
+    if (this.paused) return true;
     if (this.radioOn || !this.auto || !this.needsAm() || !this.mixSeen) return false;
     const now = Clock.now();
     if (!this.musicAt) return now - this.startAt < 5000;           // gerade gestartet: erst nachsehen
@@ -349,7 +357,7 @@ class CarRoute {
    */
   audible() {
     if (!this.needsAm()) return true;
-    if (!this.conn || this.knobHeld()) return false;
+    if (!this.conn || this.knobHeld() || this.skipped()) return false;
     return this.connState === 'CS_CONNECTED' || Clock.now() - (this.conn.at || 0) > AUDIBLE_AFTER_MS;
   }
 
@@ -618,8 +626,9 @@ class CarRoute {
     }
     const skip = this.skipped();
     const target = this.wanted && this.needsAm() && !this.knobHeld() && !skip ? this.routeId : null;
-    const rest = () => (this.knobHeld() ? 'Pause (Lautstärkeknopf)' : skip && this.wanted ? 'aus bei Radio' : null);
+    const rest = () => (this.knobHeld() ? 'Pause (Lautstärkeknopf)' : skip && this.wanted ? (this.paused ? 'Pause (Radio-Test)' : 'aus bei Radio') : null);
     const r = target ? ROUTES[target] : null;
+    if (skip && this.conn && now < this.fadeUntil) return;      // blendet gerade aus
     // nichts zu tun?
     if (!target && !this.conn) {
       if (!this.wanted) this.lastError = null;

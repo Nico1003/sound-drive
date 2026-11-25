@@ -85,6 +85,8 @@ Konstantfahrt, Teillast):
   und gibt ihm den Knopf. Darum tritt der Motorsound dort beim Drehen kurz zur Seite (abschaltbar) und kommt 2–4 Sekunden
   nach dem letzten Drehen zurück. Wer das bei Radio nicht möchte: **Motorsound bei Radio, Bluetooth und USB** ausschalten –
   dann bleibt er dort still, und Radio und Knopf verhalten sich wie ohne die App.
+- **Radio-Test** (Audio-Diagnose): gibt auf jeden laufenden Tonkanal drei leise Töne, um einen zu finden, der ohne Absenken
+  über dem Radio zu hören ist. Was gehört wurde, steht im QR-Log
 - **Motorsound unabhängig vom Lautstärkeknopf** (Standard: Normal): Die App liest die Lautstärke des Autos mit und regelt
   den Motorsound sofort gegenläufig – er bleibt beim Drehen gleich laut, eingestellt wird er nur mit dem Regler in der App.
 - **Lautstärke abgleichen:** Wie viel lauter eine Stufe am Knopf macht, ist nicht überall gleich. Im Stand, Musik an, in den
@@ -153,8 +155,8 @@ Klappt es nicht auf Anhieb: In der Statuszeile sollte „In der CarPlay-Musik“
 
 | Komponente | Version |
 |---|---|
-| Sound Drive (App) | 1.1.1 |
-| Sound Drive Audio (Tool) | 1.1.1 |
+| Sound Drive (App) | 1.1.2 |
+| Sound Drive Audio (Tool) | 1.1.2 |
 
 ---
 

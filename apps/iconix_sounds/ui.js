@@ -67,9 +67,12 @@
   }
   // Diagnose-Ansicht: Übersicht (Karten) oder technische Zeilen
   var DIAG_LINES = 12;   // 126 + 11 * 27 = 423: über den Knöpfen (458)
-  function hitsDiag(wide, details) {
+  function heardRect() { return { key: 'diag-heard', act: 'diagHeard', arg: null, x: X0, y: 330, w: X1 - X0, h: 104, r: 8 }; }
+  function hitsDiag(wide, details, probing) {
     if (wide !== undefined) setWide(wide);
     var out = [{ key: 'diag-mode', act: 'diagMode', arg: null, x: X0, y: 458, w: 220, h: 46, r: 6 }];
+    if (!details) out.push({ key: 'diag-probe', act: 'diagProbe', arg: null, x: X0 + 234, y: 458, w: 180, h: 46, r: 6 });
+    if (probing && !details) out.push(heardRect());
     if (details) out.push({ key: 'diag-next', act: 'diagNext', arg: null, x: X1 - 408, y: 458, w: 190, h: 46, r: 6 });
     out.push({ key: 'diag-close', act: 'diagClose', arg: null, x: X1 - 206, y: 458, w: 206, h: 46, r: 6 });
     return out;
@@ -86,7 +89,7 @@
     return Math.max(0, Math.min(1, (T1 - y) / (T1 - T0)));
   }
   function hitAt(profiles, x, y, diag, wide) {
-    var h = diag ? hitsDiag(!!wide, !!diag.details) : hits(profiles, !!wide);
+    var h = diag ? hitsDiag(!!wide, !!diag.details, !!(diag.probe && !diag.probe.text)) : hits(profiles, !!wide);
     for (var i = 0; i < h.length; i++) if (x >= h[i].x && x <= h[i].x + h[i].w && y >= h[i].y && y <= h[i].y + h[i].h) return h[i];
     return null;
   }
@@ -240,9 +243,9 @@
     g.text('Audio-Diagnose', X0, 84, 28, C.text, 'left', 'light');
     g.line(X0, 98, X1, 98, 1.5, C.edge);
     g.line(X0, 98, X0 + 96, 98, 3, C.accent);
-    if (d.details) drawDiagLines(g, s, d); else drawDiagCards(g, s, d.model);
+    if (d.details) drawDiagLines(g, s, d); else if (d.probe) drawProbe(g, d.probe); else drawDiagCards(g, s, d.model);
     for (i = 0; i < b.length; i++) {
-      var q = b[i], label = q.act === 'diagMode' ? (d.details ? 'Zur Übersicht' : 'Technische Details') : q.act === 'diagNext' ? 'Weiter' : 'Schließen';
+      var q = b[i], label = q.act === 'diagMode' ? (d.details ? 'Zur Übersicht' : 'Technische Details') : q.act === 'diagNext' ? 'Weiter' : q.act === 'diagProbe' ? (d.probe && !d.probe.text ? 'Test beenden' : 'Radio-Test') : 'Schließen';
       if (q.act === 'diagClose') g.rrect(q.x, q.y, q.w, q.h, q.r, C.accent); else tile(g, q.x, q.y, q.w, q.h, q.r, C.bg2, C.edge);
       g.text(label, q.x + q.w / 2, q.y + 32, 21, q.act === 'diagClose' ? '#ffffff' : C.text, 'center', q.act === 'diagClose' ? false : 'light');
     }
@@ -265,6 +268,17 @@
       if (v[1]) g.text(cut(v.slice(1).join(' '), max), x + 18, y + 76, 20, C.text, 'left', 'light');
       else if (tip[0]) g.text(cut(tip.join(' '), s.wide ? 62 : 35), x + 18, y + 76, 16, c.state === 'ok' ? C.faint : LIGHT[c.state], 'left', 'light');
     }
+  }
+
+  // Radio-Test (statt der Karten) mit großem Knopf "Töne gehört"
+  function drawProbe(g, p) {
+    var b = heardRect(), ls = p.text ? ['Radio-Test beendet'].concat(wrapWords(p.text, 58).slice(0, 8)) :
+      !p.i ? ['Radio-Test', 'Bitte Radio einschalten. Gleich kommen je Kanal', 'drei leise Töne.'] :
+        ['Kanal ' + p.i + ' von ' + p.n, 'Hörst du drei leise Töne, während das Radio', 'normal laut weiterläuft? Dann unten tippen.'];
+    for (var i = 0; i < ls.length; i++) g.text(ls[i], X0, 150 + i * 36, i ? 22 : 30, i ? C.dim : C.text, 'left', 'light');
+    if (p.text) return;
+    tile(g, b.x, b.y, b.w, b.h, b.r, p.marked ? C.ok : C.bg2, p.marked ? C.ok : C.accent2);
+    g.text(p.marked ? 'Notiert' : 'Töne gehört', b.x + b.w / 2, b.y + 64, 32, p.marked ? '#ffffff' : C.text, 'center', 'light');
   }
 
   function drawDiagLines(g, s, d) {

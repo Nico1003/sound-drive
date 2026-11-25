@@ -150,6 +150,7 @@ class AudioLink extends EventEmitter {
       this.emit('diag');
       return;
     }
+    if (m.op === 'probe') { this.emit('probe', m); return; }
     if (m.op !== 'status') return;
     // neue Aussetzer ins Log der App (höchstens alle 30 s), damit sie im QR-Log mit Uhrzeit stehen
     const u = m.underruns || 0, now = Clock.now();

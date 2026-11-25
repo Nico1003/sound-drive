@@ -21,6 +21,7 @@
  *   drive       weiche Sättigung
  *   exhaust / bark / vib / vibHz  Innenraum-Mischung: Auspuffanteil, dessen "Bellen" (Ableitung),
  *               Körperschall (tiefpassgefilterte Zündimpulse über Motorlager und Karosserie) und dessen Grenzfrequenz
+ *   topDb       so viel kräftiger wird der Ton (200–600 Hz) zur Höchstdrehzahl hin (Standard 3 dB)
  *   gain        Pegelabgleich zwischen den Profilen (mit kit/tools/iconix_calibrate.js ermittelt)
  *   Die Kennungen (id) bleiben bei Umbenennungen gleich: Sie stehen in den gespeicherten Einstellungen.
  */
@@ -51,7 +52,7 @@
       headerM: 0.9, headerRatio: 1.5, headerSpread: 0.22,
       pipeM: 2.6, pipeLp: 2100, chamberM: 0.4, mufflerHz: 1120, mufflerQ: 0.8,
       unev: 0.55, variance: 0.65, idleRip: 0.7,
-      boomHz: 80, drive: 1.6, rasp: 0.012, pipeFb: 0.26, chamberFb: 0.24, cabinHz: 1550, boomDb: 5.5, midDb: -2.5, exhaust: 0.8, bark: 0.52, vib: 0.65, vibHz: 125, gain: 3.0
+      boomHz: 80, drive: 1.6, rasp: 0.012, pipeFb: 0.26, chamberFb: 0.24, cabinHz: 1550, boomDb: 5.5, midDb: -2.5, exhaust: 0.8, bark: 0.52, vib: 0.65, vibHz: 125, topDb: 6, gain: 3.0
     },
     {
       // Reihensechser: glatt und rauchig, dreht frei hoch

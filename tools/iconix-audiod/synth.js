@@ -47,6 +47,9 @@
   // Vollgas bleibt gleich. Pegel bezogen auf Lautstärke 100 %; Verhältnis 3:1 oberhalb COMP_T (leise bis ~+10 dB).
   // oben im Drehzahlband lauter (wie ein echter Motor im Innenraum): bis +RPM_LIFT bei Höchstdrehzahl, nach dem Kompressor
   var RPM_LIFT = 1.0;
+  // ... und kräftiger: Die Spitzen sind dort schon am Anschlag, lauter wirkt es nur mit mehr Ton im Bereich 200–600 Hz (hört das
+  // Ohr viel besser als den Bass). Anhebung vor der Sättigung (macht dichter, nicht spitzer), ab halber Höchstdrehzahl, bis topDb des Profils.
+  var TOP_HZ = 330, TOP_Q = 0.55, TOP_DB = 3, TOP_FROM = 0.45, TOP_FULL = 0.85;
   // Lautstärke 100 % = früher 150 % (Boost): der Überschuss über 1 geht vor den Kompressor
   var VOL_SCALE = 1.5;
   // Fahrmodus (Fahrerlebnisschalter): wie aggressiv der Sound ist. -1 = Eco (dezent, dumpf), 0 = Comfort,
@@ -189,7 +192,7 @@
     // Filter
     this.fMuff = new Biquad(); this.fCabin = new Biquad(); this.fCabin2 = new Biquad(); this.fBoom = new Biquad();
     this.fGuard = new Biquad(); this.fDc = new Biquad();
-    this.fBass = new Biquad();
+    this.fBass = new Biquad(); this.fTop = new Biquad(); this.topDb = 0;
     this.fGuard.set('lp', 6500, 0.71, sr); // nach dem Innenraum-Tiefpass reicht 2. Ordnung
     this.fDc.set('hp', 24, 0.7, sr);
 
@@ -239,7 +242,7 @@
     this.hLp0 = 0; this.hLp1 = 0; this.pLp = 0; this.pLp2 = 0; this.cLp = 0; this.radLp = 0; this.yPrev = 0;
     this.nz1 = 0; this.nz2 = 0;
     this.cycVar = 0; this.bump = 0; this.vib1 = 0; this.vib2 = 0; this.combS = 0.2;
-    this.fBass.reset();
+    this.fBass.reset(); this.fTop.reset();
     var fl = [this.fMuff, this.fCabin, this.fCabin2, this.fBoom, this.fGuard, this.fDc];
     for (var i = 0; i < fl.length; i++) fl[i].reset();
   };
@@ -387,6 +390,9 @@
     if (Math.abs(cabF - this.aggCab) > 15) { this.aggCab = cabF; this.fCabin.set('lp', cabF, 0.6, sr); }
     this.exMixEff = this.exMix * (0.55 + 0.45 * bk);
     var x = clamp(rpm / p.maxRpm, 0, 1.1);
+    // oben kräftiger, unter Last mehr als beim Rollen (in kleinen Schritten neu setzen; 0 dB = der Filter lässt alles durch)
+    var td = val(p.topDb, TOP_DB) * smooth((x - TOP_FROM) / (TOP_FULL - TOP_FROM)) * (this.target.overrun ? 0.3 : 0.5 + 0.5 * Math.min(1, load * 1.5));
+    if (Math.abs(td - this.topDb) > 0.1) { this.topDb += clamp(td - this.topDb, -0.15, 0.15); this.fTop.set('peak', TOP_HZ, TOP_Q, sr, this.topDb); }
     // Kurbelwinkel je Sample (Anteil am 720°-Zyklus), Leerlauf-Ungleichförmigkeit
     this.dph = rpm > 30 ? rpm / 120 / sr : 0;
     this.rip = 0.05 * clamp(Math.pow(p.idleRpm / Math.max(rpm, 1), 2), 0, 1) * (p.idleRip || 1);
@@ -461,7 +467,7 @@
     var kH = this.kHdrLp, kP = this.kPipeLp, kC = this.kChamLp, kRad = this.kRadLp, kNz = this.kNz;
     var hdrFb = this.hdrFb, pipeFb = this.pipeFb, chamFb = this.chamFb;
     var fMuff = this.fMuff, fBoom = this.fBoom, fCab = this.fCabin, fCab2 = this.fCabin2, fG = this.fGuard, fDc = this.fDc;
-    var useMid = !!this.profile.midDb, useBass = this.useBass, fBass = this.fBass;
+    var useMid = !!this.profile.midDb, useBass = this.useBass, fBass = this.fBass, useTop = this.topDb > 0.05, fTop = this.fTop;
     var dph = this.dph, rip = this.rip, phase = this.phase, dist = this.dist, next = this.next;
     var unevT = this.unevW * 0.22 / Math.max(N, 1), uTime = P.uTime;
     var amp = this.amp, ampStep = this.ampStep, drive = this.drive, dn = this.driveNorm;
@@ -528,6 +534,7 @@
       s = fDc.run(s);
       s = fBoom.run(s);
       s = fCab.run(s); if (useMid) s = fCab2.run(s);
+      if (useTop) s = fTop.run(s);
       y = s * drive;
       s = y / (1 + (y < 0 ? -y : y)) * dn;
       s = fG.run(s);

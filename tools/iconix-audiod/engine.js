@@ -21,6 +21,7 @@ const clock = { now: function () { const t = process.hrtime(); return 1e9 + t[0]
 
 // Synthese-Rate: 48 kHz wie die SmartX-Kanäle des Head Units (24-kHz-Kanäle bekommen je 2 Frames gemittelt)
 const RATE = Number(process.env.ICONIX_RATE) || 48000;
+const LIFT_DB = 2.5;
 const TICK_MS = 10;          // 100 Wakeups/s, solange Ton läuft – kleine Blöcke erlauben knappen Vorlauf
 const IDLE_TICK_MS = 200;    // ohne Ton nur 5 Wakeups/s; neue Fahrzeugdaten oder Testsound wecken sofort
 // so viel Audio liegt höchstens vor (muss > TICK_MS + Jitter des Head Units sein). 160 ms gibt Reserve,
@@ -414,7 +415,7 @@ Engine.prototype.configure = function (cfg) {
   this.synth.configure(cfg);
   // Testsound hat "Stumm" kurz aufgehoben, und jetzt schaltet jemand den Ton an: nach dem Test nicht wieder stumm
   if (this._testUnmuted && this.synth.cfg.enabled) this._testUnmuted = false;
-  if (cfg && 'outDb' in cfg) { this.outDb = isFinite(+cfg.outDb) ? Math.max(-40, Math.min(15, +cfg.outDb)) : 0; this.out.level(this.outDb); }
+  if (cfg && 'outDb' in cfg) { this.outDb = isFinite(+cfg.outDb) ? Math.max(-40, Math.min(15, +cfg.outDb)) : 0; this.out.level(this.outDb + this._lift()); }
   if (cfg && 'steady' in cfg) this.steady = !!cfg.steady;
   if (cfg && 'mixProbe' in cfg) this.setProbes(cfg.mixProbe);
   if (cfg && cfg.device && cfg.device !== this.device) this.setDevice(cfg.device);
@@ -500,6 +501,13 @@ Engine.prototype.stop = function () {
   this.out.stop();
 };
 
+/** Oben im Drehzahlband bis LIFT_DB lauter, am Ausgang: Die Synthese selbst ist dort schon am Anschlag. In 0,25-dB-Schritten. */
+Engine.prototype._lift = function () {
+  if (this.steady) return 0;
+  const s = this.synth, x = Math.max(0, Math.min(1, (s.rpm / s.profile.maxRpm - 0.45) / 0.4));
+  return Math.round(LIFT_DB * x * x * (3 - 2 * x) * 4) / 4;
+};
+
 Engine.prototype._tick = function () {
   const now = clock.now(), synth = this.synth, out = this.out;
   // zählt Wakeups, die so spät kamen, dass der Vorlauf aufgebraucht war
@@ -580,7 +588,7 @@ Engine.prototype._tick = function () {
   }
   // Synthese direkt in der Rate des Kanals (24 kHz: halbe Rechenzeit, kein Umrechnen)
   if (synth.sr !== RATE / step) this._rebuildSynth(RATE / step);
-  out.level(this.outDb);
+  out.level(this.outDb + this._lift());
   const gain = isMix(out.opts.device) ? MIX_BASE : 1;
   while (due >= step && !out.blocked && out.child) {
     let n = Math.min(due, MAX_CHUNK);
@@ -623,7 +631,7 @@ function ringLine(r) {
 
 module.exports = {
   clock: clock,
-  Engine: Engine, Output: Output, playerFor: playerFor, toPcm: toPcm, sweepAt: sweepAt, MIX_BASE: MIX_BASE, MixProbe: MixProbe, isMix: isMix, rings: rings, ringLine: ringLine,
+  ALSA_SCRIPT: ALSA_SCRIPT, python: findPython, Engine: Engine, Output: Output, playerFor: playerFor, toPcm: toPcm, sweepAt: sweepAt, MIX_BASE: MIX_BASE, MixProbe: MixProbe, isMix: isMix, rings: rings, ringLine: ringLine,
   smartxEndpoints: smartxEndpoints, resolveSmartx: resolveSmartx, formatOf: formatOf, isSmartx: isSmartx,
   FB_LEAD_MS: FB_LEAD_MS, FB_LEAD_START: FB_LEAD_START
 };

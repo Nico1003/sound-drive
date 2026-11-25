@@ -28,7 +28,7 @@ const cp = require('child_process');
 const path = require('path');
 const E = require('./engine');
 
-const VERSION = '1.1.1';
+const VERSION = '1.1.2';
 const SOCKETS = process.env.ICONIX_AUDIOD_SOCKET
   ? [process.env.ICONIX_AUDIOD_SOCKET]
   : ['/run/iconix-audiod/audiod.sock', '/tmp/iconix-audiod.sock'];
@@ -79,6 +79,7 @@ function runDaemon() {
     if (!m || typeof m !== 'object') return;
     if (m.op === 'params') engine.params(m);
     else if (m.op === 'config') { engine.configure(m.cfg); }
+    else if (m.op === 'probe') { if (m.stop) stopProbe(); else probe(); }
     else if (m.op === 'test') { log('Testsound'); engine.test(); }
     else if (m.op === 'hello') log('App verbunden: ' + m.id + ' ' + m.version);
     else if (m.op === 'diag') {
@@ -96,6 +97,40 @@ function runDaemon() {
         clients.forEach(function (c) { try { c.write(msg); } catch (x) { /* egal */ } });
       });
     }
+  }
+
+  // Radio-Test: auf jeden Kanal, der gerade läuft, nacheinander drei leise Töne (alsa_play.py probe)
+  let probeRun = null;
+  function sendProbe(m) {
+    const line = JSON.stringify(Object.assign({ op: 'probe' }, m)) + '\n';
+    clients.forEach(function (c) { try { c.write(line); } catch (e) { /* egal */ } });
+  }
+  function stopProbe() {
+    const r = probeRun;
+    probeRun = null;
+    if (r && r.child) { try { r.child.kill('SIGTERM'); } catch (e) { /* egal */ } }
+  }
+  function probe() {
+    if (probeRun) return;
+    const run = probeRun = { child: null }, py = E.python();
+    if (!py) { probeRun = null; sendProbe({ error: 'kein Python' }); return; }
+    run.child = cp.execFile(py, [E.ALSA_SCRIPT, 'rings'], { timeout: 8000, maxBuffer: 1 << 20 }, function (e, stdout) {
+      if (probeRun !== run) return;
+      let list = [];
+      try { list = JSON.parse(String(stdout).trim().split('\n').pop()).rings.filter(function (r) { return r.alive && !r.error; }); } catch (x) { list = []; }
+      log('Radio-Test: ' + list.length + ' Kanäle');
+      const next = function (i) {
+        if (probeRun !== run) return;
+        if (i >= list.length) { probeRun = null; sendProbe({ done: true }); return; }
+        const r = list[i];
+        sendProbe({ i: i + 1, n: list.length, name: r.bar + ':' + r.name + ' ' + r.periods + 'x' + r.period + ' ' + r.ch + 'ch ' + r.min + '-' + r.max });
+        run.child = cp.execFile(py, [E.ALSA_SCRIPT, 'probe', r.bar, r.name], { timeout: 9000 }, function (x, so, se) {
+          if (x && probeRun === run) log('Radio-Test ' + r.name + ': ' + String(se || x.message).trim().slice(-160));
+          setTimeout(function () { next(i + 1); }, 1500);
+        });
+      };
+      next(0);
+    });
   }
 
   function listen(p) {
@@ -123,6 +158,7 @@ function runDaemon() {
       sock.on('error', function () { /* close folgt */ });
       sock.on('close', function () {
         clients.delete(sock);
+        if (!clients.size) stopProbe();
         if (!clients.size) engine.configure({ steady: false });   // App weg: kein Dauerton (Abgleich)
       });
       try { sock.write(JSON.stringify(status()) + '\n'); } catch (e) { /* egal */ }
@@ -146,6 +182,7 @@ function runDaemon() {
 
   function shutdown() {
     log('beende');
+    stopProbe();
     engine.stop();
     servers.forEach(function (s) {
       try { s.server.close(); } catch (e) { /* egal */ }
